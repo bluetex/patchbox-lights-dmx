@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import random
+import re
 import socket
 import struct
 import threading
@@ -52,20 +53,21 @@ AMBIENT_COLORS = (
 )
 BAND_COLOR_TRIGGER = 0.25
 BAND_COLOR_RELEASE = 0.10
+TEMPO_TRIGGER_LEVEL = 0.46
+TEMPO_RELEASE_LEVEL = 0.22
+TEMPO_MIN_INTERVAL_SECONDS = 0.25
+TEMPO_MAX_INTERVAL_SECONDS = 2.0
 BAND_CHASE_BASE_STEPS_PER_SECOND = 0.125
 BAND_CHASE_LEVEL_STEPS_PER_SECOND = 0.75
 BAND_PAIR_ACCENT_GAIN = 0.66
 BAND_ROLL_BASE_GAIN = 0.28
 BAND_STROBE_DMX = 24
-BAND_STROBE_SECONDS = 0.56
-BAND_STROBE_COOLDOWN = 2.8
 BAND_SWELL_ATTACK_SECONDS = 0.12
 BAND_SWELL_RELEASE_SECONDS = 0.50
 BAND_PEAK_DIVE_SECONDS = 0.10
 BAND_PEAK_SWELL_SECONDS = 0.45
 BAND_PEAK_DIVE_GAIN = 0.24
 BAND_PEAKS_PER_EFFECT_CHANGE = 32
-BAND_STROBE_EVERY_PEAKS = 8
 BASELINE_AMBIENT_COLOR = (160, 48, 255)
 COLOR_CYCLE_PALETTE = {
     "Purple": (160, 48, 255),
@@ -89,14 +91,27 @@ OUTPUT_SPOTLIGHT_SOURCE_FIRST = INPUT_CHANNEL_COUNT + 1
 OUTPUT_SPOTLIGHT_SOURCE_LAST = INPUT_CHANNEL_COUNT + 8
 SPOTLIGHT_SOURCE_COUNT = OUTPUT_SPOTLIGHT_SOURCE_LAST
 OUTPUT_METER_STREAM = "/meters/5"
-AVAILABLE_PATTERNS = {"auto", "ambient", "chase_forward", "chase_reverse", "unison", "mixed", "color_cycle", "blackout"}
+AVAILABLE_PATTERNS = {"spotlight", "color_cycle", "chase", "blackout"}
+LEGACY_PATTERN_MAP = {
+    "auto": "spotlight", "ambient": "spotlight", "unison": "spotlight", "mixed": "spotlight",
+    "chase_forward": "chase", "chase_reverse": "chase",
+}
 DEFAULT_CONTROLS = {
     "sensitivity": 1.0,
     "audio_enabled": True,
     "brightness": 1.0,
-    "pattern": "auto",
+    "pattern": "spotlight",
     "cycle_colors": DEFAULT_CYCLE_COLORS,
     "cycle_speed": 1.5,
+    "cycle_layout": "unison",
+    "behavior_trigger": "timer",
+    "trigger_division": 1,
+    "tempo_input": 0,
+    "spotlight_overlay": True,
+    "chase_direction": "forward",
+    "chase_speed": 1.0,
+    "chase_color": "Purple",
+    "chase_strobe": False,
     "osc_model": "Behringer XR18",
     "osc_ip": DEFAULT_OSC_SOURCE_IP,
     "fixture_count": DEFAULT_FIXTURE_COUNT,
@@ -110,6 +125,31 @@ DEFAULT_CONTROLS = {
 
 def fixture_addresses_for_count(count):
     return tuple(1 + FIXTURE_CHANNELS * index for index in range(count))
+
+
+def osc_string(value):
+    encoded = value.encode("utf-8") + b"\x00"
+    return encoded + bytes((-len(encoded)) % 4)
+
+
+def parse_osc_string_message(data):
+    """Return (OSC address, string argument) for simple string replies."""
+    def read_string(offset):
+        end = data.find(b"\x00", offset)
+        if end < 0:
+            return None, len(data)
+        try:
+            value = data[offset:end].decode("utf-8")
+        except UnicodeDecodeError:
+            return None, len(data)
+        return value, (end + 4) & ~3
+
+    address, offset = read_string(0)
+    tags, offset = read_string(offset)
+    if not address or not tags or not tags.startswith(",s"):
+        return None
+    value, _ = read_string(offset)
+    return (address, value) if value is not None else None
 
 
 def parse_ipv4_address(value):
@@ -151,7 +191,8 @@ def load_control_settings():
 
             sensitivity = float(saved.get("sensitivity", controls["sensitivity"]))
             brightness = float(saved.get("brightness", controls["brightness"]))
-            pattern = saved.get("pattern", controls["pattern"])
+            saved_pattern = saved.get("pattern", controls["pattern"])
+            pattern = LEGACY_PATTERN_MAP.get(saved_pattern, saved_pattern)
             cycle_colors = saved.get("cycle_colors", controls["cycle_colors"])
             cycle_speed = float(saved.get("cycle_speed", controls["cycle_speed"]))
             audio_enabled = saved.get("audio_enabled", controls["audio_enabled"])
@@ -180,6 +221,34 @@ def load_control_settings():
                 controls["brightness"] = brightness
             if pattern in AVAILABLE_PATTERNS:
                 controls["pattern"] = pattern
+            legacy_direction = "reverse" if saved_pattern == "chase_reverse" else controls["chase_direction"]
+            chase_direction = saved.get("chase_direction", legacy_direction)
+            if chase_direction in ("forward", "reverse", "bounce"):
+                controls["chase_direction"] = chase_direction
+            cycle_layout = saved.get("cycle_layout", controls["cycle_layout"])
+            if cycle_layout in ("unison", "spread"):
+                controls["cycle_layout"] = cycle_layout
+            behavior_trigger = saved.get("behavior_trigger", controls["behavior_trigger"])
+            if behavior_trigger in ("timer", "band_peaks", "beat_sync"):
+                controls["behavior_trigger"] = behavior_trigger
+            trigger_division = saved.get("trigger_division", controls["trigger_division"])
+            if type(trigger_division) is int and trigger_division in (1, 2, 4, 8):
+                controls["trigger_division"] = trigger_division
+            tempo_input = saved.get("tempo_input", controls["tempo_input"])
+            if type(tempo_input) is int and 0 <= tempo_input <= INPUT_CHANNEL_COUNT:
+                controls["tempo_input"] = tempo_input
+            spotlight_overlay = saved.get("spotlight_overlay", controls["spotlight_overlay"])
+            if type(spotlight_overlay) is bool:
+                controls["spotlight_overlay"] = spotlight_overlay
+            chase_speed = float(saved.get("chase_speed", controls["chase_speed"]))
+            if 0.1 <= chase_speed <= 8.0:
+                controls["chase_speed"] = chase_speed
+            chase_color = saved.get("chase_color", controls["chase_color"])
+            if chase_color in COLOR_CYCLE_PALETTE:
+                controls["chase_color"] = chase_color
+            chase_strobe = saved.get("chase_strobe", controls["chase_strobe"])
+            if type(chase_strobe) is bool:
+                controls["chase_strobe"] = chase_strobe
             if (
                 isinstance(cycle_colors, list)
                 and cycle_colors
@@ -357,8 +426,6 @@ class LightingController:
         self.band_swell_level = 0.0
         self.band_peak_hold_until = 0.0
         self.band_dive_started = -1e9
-        self.band_strobe_until = 0.0
-        self.band_last_strobe = -1e9
         self.band_captured_peak = 0.0
         self.band_color_rgb = BASELINE_AMBIENT_COLOR
         self.color_cycle_started = time.monotonic()
@@ -370,6 +437,12 @@ class LightingController:
         self.band_peak_candidate = 0.0
         self.band_peak_valley = 1.0
         self.band_effect_peak_count = 0
+        self.band_peak_events = 0
+        self.tempo_beat_events = 0
+        self.tempo_bpm = None
+        self.tempo_intervals = []
+        self.tempo_last_beat = None
+        self.tempo_armed = True
         self.last_meter_subscription = 0.0
         self.last_valid_meter_time = None
         self.last_engine_update = time.monotonic()
@@ -414,7 +487,6 @@ class LightingController:
         self.band_peak_level = 0.0
         self.band_swell_level = 0.0
         self.band_peak_hold_until = 0.0
-        self.band_strobe_until = 0.0
         self.band_captured_peak = 0.0
         self.band_color_active = False
         self.band_color_rgb = BASELINE_AMBIENT_COLOR
@@ -444,20 +516,34 @@ class LightingController:
         now = time.monotonic()
         controls = self.controls
         pattern = controls["pattern"]
-        effect_active = controls["audio_enabled"] and (
-            self.band_color_active or self.band_peak_level > 0.01
+        fixture_count = len(self.fixture_addresses)
+        ambient_level = (
+            0.55
+            if pattern in ("color_cycle", "chase")
+            else self.band_swell_level
+            if controls["audio_enabled"] and (self.band_color_active or self.band_peak_level > 0.01)
+            else MIN_BAND_BRIGHTNESS
         )
-        if pattern in ("chase_forward", "chase_reverse"):
-            effect_active = True
-        elif pattern in ("ambient", "color_cycle"):
-            effect_active = False
-        ambient_level = self.band_swell_level if effect_active else MIN_BAND_BRIGHTNESS
-        if pattern in ("chase_forward", "chase_reverse"):
-            ambient_level = max(MIN_BAND_BRIGHTNESS, ambient_level)
-            if not controls["audio_enabled"]:
-                ambient_level = 0.55
-        if pattern in ("ambient", "color_cycle"):
-            ambient_level = 0.55
+        trigger = controls["behavior_trigger"]
+        division = controls["trigger_division"]
+        if trigger == "band_peaks":
+            event_step = self.band_peak_events // division
+        elif trigger == "beat_sync":
+            event_step = self.tempo_beat_events // division
+        else:
+            if pattern == "chase":
+                event_step = int((now - self.color_cycle_started) * controls["chase_speed"])
+            else:
+                event_step = int((now - self.color_cycle_started) / max(0.1, controls["cycle_speed"]))
+
+        colors = controls["cycle_colors"]
+        base_color_index = event_step % len(colors)
+        chase_position = event_step % fixture_count
+        spotlight_effect = pattern == "spotlight" and controls["audio_enabled"] and self.band_color_active
+        spotlight_phase = self.band_chase_phase * self.band_chase_direction
+        roll_position = spotlight_phase % fixture_count
+        bright_pair = int(spotlight_phase * 0.5) % 2
+        palette_turn = int(self.band_chase_phase / fixture_count) % len(AMBIENT_COLORS)
         dive_age = now - self.band_dive_started
         if dive_age < BAND_PEAK_DIVE_SECONDS:
             dive_gain = BAND_PEAK_DIVE_GAIN
@@ -467,69 +553,61 @@ class LightingController:
             dive_gain = BAND_PEAK_DIVE_GAIN + (1.0 - BAND_PEAK_DIVE_GAIN) * progress
         else:
             dive_gain = 1.0
-
-        directed_phase = self.band_chase_phase * self.band_chase_direction
-        fixture_count = len(self.fixture_addresses)
-        roll_position = directed_phase % fixture_count
-        bright_pair = int(directed_phase * 0.5) % 2
-        palette_turn = int(self.band_chase_phase / fixture_count) % len(AMBIENT_COLORS)
-        strobe_target = None
-        if (
-            effect_active
-            and self.smoothed_band >= BAND_COLOR_TRIGGER
-            and now < self.band_strobe_until
-        ):
-            strobe_target = int(roll_position + 0.5) % fixture_count
+        if controls["chase_direction"] == "reverse":
+            chase_position = fixture_count - 1 - chase_position
+        elif controls["chase_direction"] == "bounce" and fixture_count > 1:
+            period = 2 * (fixture_count - 1)
+            phase = event_step % period
+            chase_position = phase if phase < fixture_count else period - phase
 
         for index, address in enumerate(self.fixture_addresses):
             spotlight_input = controls["spotlight_inputs"][index]
-            peak = (
+            white_level = (
                 self.white_levels[spotlight_input - 1]
                 if controls["audio_enabled"] and spotlight_input
                 else 0.0
             )
-            if peak > 0.0:
-                white = int(peak * 255)
+            if pattern == "blackout" or not controls["fixture_enabled"][index]:
+                self.set_fixture_color(address, (0, 0, 0))
+                continue
+            if white_level > 0.0 and (pattern == "spotlight" or controls["spotlight_overlay"]):
+                white = int(white_level * 255)
                 self.set_fixture_color(address, (white, white, white))
                 continue
 
-            rgb = self.ambient_rgb(
-                ambient_level,
-                index,
-                palette_offset=palette_turn if effect_active else 0,
-            )
             if pattern == "color_cycle":
-                colors = controls["cycle_colors"]
-                color_index = int((now - self.color_cycle_started) / controls["cycle_speed"]) % len(colors)
-                color = COLOR_CYCLE_PALETTE[colors[color_index]]
-                rgb = tuple(int(channel * ambient_level * AMBIENT_INTENSITY) for channel in color)
-            if pattern in ("unison", "mixed"):
-                color = self.band_color_rgb
-                if color in AMBIENT_COLORS:
-                    offset = 0 if pattern == "unison" else index
-                    color = AMBIENT_COLORS[(AMBIENT_COLORS.index(color) + offset) % len(AMBIENT_COLORS)]
-                rgb = tuple(int(channel * ambient_level * AMBIENT_INTENSITY) for channel in color)
-            if pattern in ("chase_forward", "chase_reverse"):
-                direction = 1 if pattern == "chase_forward" else -1
-                position = (self.band_chase_phase * direction) % fixture_count
-                distance = abs(index - position)
-                distance = min(distance, fixture_count - distance)
-                gain = max(0.12, 1.0 - distance / 1.5)
-                rgb = tuple(int(channel * gain) for channel in rgb)
-            elif effect_active:
-                # Layer a smooth traveling swell with an alternating-pair pulse.
-                distance = abs(index - roll_position)
-                distance = min(distance, fixture_count - distance)
-                crest = max(0.0, 1.0 - distance / max(1.0, fixture_count / 2.0))
-                roll_gain = BAND_ROLL_BASE_GAIN + (1.0 - BAND_ROLL_BASE_GAIN) * crest
-                pair_gain = 1.0 if index % 2 == bright_pair else BAND_PAIR_ACCENT_GAIN
-                gain = roll_gain * pair_gain * dive_gain
-                rgb = tuple(int(channel * gain) for channel in rgb)
-            strobe = BAND_STROBE_DMX if pattern == "auto" and index == strobe_target else 0
+                color_index = (base_color_index + (index if controls["cycle_layout"] == "spread" else 0)) % len(colors)
+                rgb = COLOR_CYCLE_PALETTE[colors[color_index]]
+                rgb = tuple(int(channel * ambient_level * AMBIENT_INTENSITY) for channel in rgb)
+            elif pattern == "chase":
+                rgb = COLOR_CYCLE_PALETTE[controls["chase_color"]]
+                distance = abs(index - chase_position)
+                gain = 1.0 if distance == 0 else (0.18 if distance == 1 else 0.05)
+                rgb = tuple(int(channel * gain * ambient_level) for channel in rgb)
+            else:
+                rgb = self.ambient_rgb(
+                    ambient_level,
+                    index,
+                    palette_offset=palette_turn if spotlight_effect else 0,
+                )
+                if spotlight_effect:
+                    distance = abs(index - roll_position)
+                    distance = min(distance, fixture_count - distance)
+                    crest = max(0.0, 1.0 - distance / max(1.0, fixture_count / 2.0))
+                    roll_gain = BAND_ROLL_BASE_GAIN + (1.0 - BAND_ROLL_BASE_GAIN) * crest
+                    pair_gain = 1.0 if index % 2 == bright_pair else BAND_PAIR_ACCENT_GAIN
+                    gain = roll_gain * pair_gain * dive_gain
+                    rgb = tuple(int(channel * gain) for channel in rgb)
+
+            strobe = 0
+            if pattern == "chase" and controls["chase_strobe"] and index == chase_position:
+                strobe = BAND_STROBE_DMX
             self.set_fixture_color(address, rgb, strobe=strobe)
 
     def process_meter(self, values, now):
         voice_values = values[0:INPUT_CHANNEL_COUNT]
+        if self.controls["tempo_input"]:
+            self.update_tempo_meter(values[self.controls["tempo_input"] - 1], now)
         sensitivity_db = 12.0 * math.log2(self.controls["sensitivity"])
         if not self.controls["audio_enabled"]:
             for index, meter_value in enumerate(voice_values):
@@ -608,13 +686,7 @@ class LightingController:
                     self.band_peak_level = max(self.band_peak_level, peak)
                     self.band_peak_hold_until = now + VOCAL_PEAK_HOLD_SECONDS
                     self.band_effect_peak_count += 1
-
-                    if (
-                        self.band_effect_peak_count % BAND_STROBE_EVERY_PEAKS == 0
-                        and now - self.band_last_strobe >= BAND_STROBE_COOLDOWN
-                    ):
-                        self.band_strobe_until = now + BAND_STROBE_SECONDS
-                        self.band_last_strobe = now
+                    self.band_peak_events += 1
 
                     if self.band_effect_peak_count >= BAND_PEAKS_PER_EFFECT_CHANGE:
                         self.band_effect_peak_count = 0
@@ -670,6 +742,40 @@ class LightingController:
                 self.voice_peak_active[index] = False
                 self.voice_captured_peaks[index] = 0.0
 
+    def update_tempo_meter(self, meter_value, now):
+        """Estimate tempo from transient intervals on the selected kick input."""
+        if not self.controls["audio_enabled"] or not self.controls["tempo_input"]:
+            return
+        sensitivity_db = 12.0 * math.log2(self.controls["sensitivity"])
+        level = clean_vu(int(meter_value + sensitivity_db * 256.0))
+        if level <= TEMPO_RELEASE_LEVEL:
+            self.tempo_armed = True
+            return
+        if level < TEMPO_TRIGGER_LEVEL or not self.tempo_armed:
+            return
+
+        self.tempo_armed = False
+        if self.tempo_last_beat is not None:
+            interval = now - self.tempo_last_beat
+            if interval > TEMPO_MAX_INTERVAL_SECONDS:
+                self.tempo_intervals.clear()
+                self.tempo_bpm = None
+            elif interval < TEMPO_MIN_INTERVAL_SECONDS:
+                return
+            else:
+                self.tempo_intervals.append(interval)
+                self.tempo_intervals = self.tempo_intervals[-7:]
+                ordered = sorted(self.tempo_intervals)
+                median_interval = ordered[len(ordered) // 2]
+                measured_bpm = 60.0 / median_interval
+                self.tempo_bpm = (
+                    measured_bpm
+                    if self.tempo_bpm is None
+                    else 0.35 * measured_bpm + 0.65 * self.tempo_bpm
+                )
+        self.tempo_last_beat = now
+        self.tempo_beat_events += 1
+
     def update(self, now):
         with self.controls_lock:
             self._update_locked(now)
@@ -678,13 +784,8 @@ class LightingController:
         elapsed = max(0.0, now - self.last_engine_update)
         self.last_engine_update = now
         pattern = self.controls["pattern"]
-        if self.band_color_active or self.band_peak_level > 0.01 or pattern in ("chase_forward", "chase_reverse"):
-            chase_rate = (
-                BAND_CHASE_BASE_STEPS_PER_SECOND
-                + self.smoothed_band * BAND_CHASE_LEVEL_STEPS_PER_SECOND
-            )
-            if pattern in ("chase_forward", "chase_reverse"):
-                chase_rate = max(0.25, chase_rate)
+        if pattern == "spotlight" and (self.band_color_active or self.band_peak_level > 0.01):
+            chase_rate = BAND_CHASE_BASE_STEPS_PER_SECOND + self.smoothed_band * BAND_CHASE_LEVEL_STEPS_PER_SECOND
             self.band_chase_phase += elapsed * chase_rate
 
         for index in range(SPOTLIGHT_SOURCE_COUNT):
@@ -724,6 +825,9 @@ class LightingController:
             self.voice_captured_peaks[:] = [0.0] * SPOTLIGHT_SOURCE_COUNT
             self.band_color_active = False
             self.band_captured_peak = 0.0
+        if self.tempo_last_beat is not None and now - self.tempo_last_beat > TEMPO_MAX_INTERVAL_SECONDS:
+            self.tempo_bpm = None
+            self.tempo_intervals.clear()
 
         # Repeat the held band lift while a live band signal remains active.
         if (
@@ -854,28 +958,32 @@ PANEL_HTML = r'''<!doctype html>
 </style></head><body>
 <header class="page-header"><h1>Patchbox Lights</h1><a class="settings-link" href="/settings">Settings →</a></header>
 <p class="sub">Live controls · same private network</p>
-<section class="card"><div class="label"><span>Pattern</span><span class="value" id="patternName">Auto</span></div>
-<select id="pattern" aria-label="Lighting pattern">
-<option value="auto">Auto · meter driven</option><option value="ambient">Ambient wash</option><option value="color_cycle">Color cycle</option><option value="chase_forward">Chase · forward</option><option value="chase_reverse">Chase · reverse</option><option value="unison">Unison colors</option><option value="mixed">Mixed colors</option><option value="blackout">Blackout</option></select>
-<div class="cycle-settings" id="cycleSettings" hidden><p class="small cycle-intro">Select colors to include; they cycle in the order shown. Meter peaks still flash their assigned fixture white.</p><div class="color-grid" id="cycleColors"><label class="color-choice"><input type="checkbox" value="Purple"><i class="color-dot" style="background:#a030ff"></i>Purple</label><label class="color-choice"><input type="checkbox" value="Green"><i class="color-dot" style="background:#00ff3c"></i>Green</label><label class="color-choice"><input type="checkbox" value="Teal"><i class="color-dot" style="background:#00d2be"></i>Teal</label><label class="color-choice"><input type="checkbox" value="Magenta"><i class="color-dot" style="background:#ff00b4"></i>Magenta</label><label class="color-choice"><input type="checkbox" value="Blue"><i class="color-dot" style="background:#1450ff"></i>Blue</label><label class="color-choice"><input type="checkbox" value="Cyan"><i class="color-dot" style="background:#00dcff"></i>Cyan</label><label class="color-choice"><input type="checkbox" value="Amber"><i class="color-dot" style="background:#ff9600"></i>Amber</label><label class="color-choice"><input type="checkbox" value="Red"><i class="color-dot" style="background:#ff1818"></i>Red</label></div><div class="cycle-speed"><div class="label"><span>Seconds per color</span><span class="value" id="cycleSpeedValue">1.50 s</span></div><input id="cycleSpeed" type="range" min="0.25" max="15" step="0.25" value="1.5" aria-label="Seconds per color"></div></div>
+<section class="card"><div class="label"><span>Mode</span><span class="value" id="patternName">Spotlight</span></div>
+<select id="pattern" aria-label="Lighting mode"><option value="spotlight">Spotlight · meter driven</option><option value="color_cycle">Color cycle</option><option value="chase">Chase</option><option value="blackout">Blackout</option></select>
+<div id="effectSettings" hidden><label class="small">Effect trigger<select id="behaviorTrigger"><option value="timer">Timer</option><option value="band_peaks">Band peaks</option><option value="beat_sync">Kick beat sync</option></select></label><label class="small" id="divisionWrap" hidden>Advance every<select id="triggerDivision"><option value="1">1 beat / peak</option><option value="2">2 beats / peaks</option><option value="4">4 beats / peaks</option><option value="8">8 beats / peaks</option></select></label>
+<div id="cycleSettings" hidden><p class="small cycle-intro">Choose the colors and whether fixtures change together or spread across the palette.</p><div class="color-grid" id="cycleColors"><label class="color-choice"><input type="checkbox" value="Purple"><i class="color-dot" style="background:#a030ff"></i>Purple</label><label class="color-choice"><input type="checkbox" value="Green"><i class="color-dot" style="background:#00ff3c"></i>Green</label><label class="color-choice"><input type="checkbox" value="Teal"><i class="color-dot" style="background:#00d2be"></i>Teal</label><label class="color-choice"><input type="checkbox" value="Magenta"><i class="color-dot" style="background:#ff00b4"></i>Magenta</label><label class="color-choice"><input type="checkbox" value="Blue"><i class="color-dot" style="background:#1450ff"></i>Blue</label><label class="color-choice"><input type="checkbox" value="Cyan"><i class="color-dot" style="background:#00dcff"></i>Cyan</label><label class="color-choice"><input type="checkbox" value="Amber"><i class="color-dot" style="background:#ff9600"></i>Amber</label><label class="color-choice"><input type="checkbox" value="Red"><i class="color-dot" style="background:#ff1818"></i>Red</label></div><label class="small">Fixture layout<select id="cycleLayout"><option value="unison">Unison colors</option><option value="spread">Spread colors</option></select></label><div class="cycle-speed"><div class="label"><span>Seconds per color</span><span class="value" id="cycleSpeedValue">1.50 s</span></div><input id="cycleSpeed" type="range" min="0.25" max="15" step="0.25" value="1.5" aria-label="Seconds per color"></div></div>
+<div id="chaseSettings" hidden><label class="small">Chase color<select id="chaseColor"></select></label><label class="small">Direction<select id="chaseDirection"><option value="forward">Forward · 1 to 4</option><option value="reverse">Reverse · 4 to 1</option><option value="bounce">Bounce</option></select></label><div class="cycle-speed"><div class="label"><span>Chase speed</span><span class="value" id="chaseSpeedValue">1.00×</span></div><input id="chaseSpeed" type="range" min="0.1" max="8" step="0.1" value="1" aria-label="Chase speed"></div><label class="small"><input id="chaseStrobe" type="checkbox"> Strobe the active fixture</label></div>
+<label class="small"><input id="spotlightOverlay" type="checkbox" checked> Keep meter triggered white spotlights over this effect</label></div>
 <div class="toast" id="toast"></div></section>
 <section class="card"><div class="label"><span>Brightness</span><span class="value" id="brightnessValue">100%</span></div><input id="brightness" type="range" min="0" max="100" value="100" aria-label="Brightness"></section>
 <section class="card"><div class="audio-heading"><strong>Audio sensitivity</strong><label class="audio-toggle" title="Toggle audio response"><input id="audioEnabled" type="checkbox" checked aria-label="Audio response"><span class="switch-track" aria-hidden="true"></span></label></div><div class="label"><span>Sensitivity</span><span class="value" id="sensitivityValue">1.00×</span></div><input id="sensitivity" type="range" min="50" max="200" value="100" aria-label="Audio sensitivity"><div class="small">Raise it to react to quieter signals; turn Audio response off to ignore meter changes.</div></section>
 <section class="card"><div class="status"><strong>Meter input</strong><span class="small" id="meterState"><i class="dot"></i>Connecting</span></div><div id="fixtureMeters"></div><div class="meter"><span>Band</span><div class="track"><div class="fill" id="band"></div></div><span id="bandt">0%</span></div><div class="small" id="detail">Waiting for status…</div></section>
-<div class="row"><button id="auto">Return to Auto</button><button class="blackout" id="blackout">Blackout</button></div>
+<div class="row"><button id="auto">Spotlight mode</button><button class="blackout" id="blackout">Blackout</button></div>
 <script>
-const $=id=>document.getElementById(id), names={auto:'Auto',ambient:'Ambient wash',color_cycle:'Color cycle',chase_forward:'Chase · forward',chase_reverse:'Chase · reverse',unison:'Unison colors',mixed:'Mixed colors',blackout:'Blackout'};let timer;
+const $=id=>document.getElementById(id), names={spotlight:'Spotlight',color_cycle:'Color cycle',chase:'Chase',blackout:'Blackout'},palette=['Purple','Green','Teal','Magenta','Blue','Cyan','Amber','Red'];let timer;
 async function control(values){try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)});const j=await r.json();if(!r.ok)throw Error(j.error||'Request failed');$('toast').textContent='Control updated';setTimeout(()=>{$('toast').textContent=''},1300)}catch(e){$('toast').textContent='Could not update: '+e.message}}
 function delayed(value){clearTimeout(timer);timer=setTimeout(()=>control(value),110)}
 $('brightness').addEventListener('input',e=>{$('brightnessValue').textContent=e.target.value+'%';delayed({brightness:Number(e.target.value)/100})});
 $('sensitivity').addEventListener('input',e=>{$('sensitivityValue').textContent=(Number(e.target.value)/100).toFixed(2)+'×';delayed({sensitivity:Number(e.target.value)/100})});
 $('audioEnabled').addEventListener('change',e=>{const enabled=e.target.checked;$('sensitivity').disabled=!enabled;control({audio_enabled:enabled})});
-$('pattern').addEventListener('change',e=>{$('cycleSettings').hidden=e.target.value!=='color_cycle';control({pattern:e.target.value})});$('auto').onclick=()=>{$('pattern').value='auto';$('cycleSettings').hidden=true;control({pattern:'auto'})};$('blackout').onclick=()=>{$('pattern').value='blackout';$('cycleSettings').hidden=true;control({pattern:'blackout'})};
+$('pattern').addEventListener('change',e=>{renderMode();control({pattern:e.target.value})});$('auto').onclick=()=>{$('pattern').value='spotlight';renderMode();control({pattern:'spotlight'})};$('blackout').onclick=()=>{$('pattern').value='blackout';renderMode();control({pattern:'blackout'})};
 document.querySelectorAll('#cycleColors input').forEach(input=>input.onchange=()=>{const colors=Array.from(document.querySelectorAll('#cycleColors input:checked')).map(item=>item.value);if(!colors.length){input.checked=true;$('toast').textContent='Select at least one color';return}control({cycle_colors:colors})});
 function setCycleSpeed(value,save){$('cycleSpeed').value=value;$('cycleSpeedValue').textContent=Number(value).toFixed(2)+' s';if(save)delayed({cycle_speed:Number(value)})}
 $('cycleSpeed').addEventListener('input',e=>setCycleSpeed(e.target.value,true));
+function renderMode(){const pattern=$('pattern').value;$('patternName').textContent=names[pattern]||pattern;$('effectSettings').hidden=!['color_cycle','chase'].includes(pattern);$('cycleSettings').hidden=pattern!=='color_cycle';$('chaseSettings').hidden=pattern!=='chase';$('divisionWrap').hidden=$('behaviorTrigger').value==='timer';}
+function bindSelect(id,key){$(id).onchange=()=>control({[key]:key==='trigger_division'?Number($(id).value):$(id).value})}bindSelect('behaviorTrigger','behavior_trigger');bindSelect('triggerDivision','trigger_division');bindSelect('cycleLayout','cycle_layout');bindSelect('chaseDirection','chase_direction');bindSelect('chaseColor','chase_color');$('behaviorTrigger').onchange=()=>{renderMode();control({behavior_trigger:$('behaviorTrigger').value})};$('spotlightOverlay').onchange=()=>control({spotlight_overlay:$('spotlightOverlay').checked});$('chaseStrobe').onchange=()=>control({chase_strobe:$('chaseStrobe').checked});$('chaseSpeed').oninput=e=>{$('chaseSpeedValue').textContent=Number(e.target.value).toFixed(1)+'×';delayed({chase_speed:Number(e.target.value)})};palette.forEach(color=>$('chaseColor').add(new Option(color,color)));
 function renderFixtureMeters(addresses){const root=$('fixtureMeters'),count=addresses.length;if(root.dataset.count===String(count))return;root.dataset.count=count;root.innerHTML='';addresses.forEach((address,index)=>{const row=document.createElement('div');row.className='meter';row.innerHTML=`<span class="meter-name"><strong>Fixture ${index+1}</strong><small id="source${index}"></small></span><div class="track"><div class="fill" id="v${index}"></div></div><span id="v${index}t">0%</span>`;root.appendChild(row)})}
-async function refresh(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();const addresses=s.fixture_addresses||[];renderFixtureMeters(addresses);$('pattern').value=s.controls.pattern;$('patternName').textContent=names[s.controls.pattern]||s.controls.pattern;$('cycleSettings').hidden=s.controls.pattern!=='color_cycle';$('audioEnabled').checked=s.controls.audio_enabled;$('sensitivity').disabled=!s.controls.audio_enabled;$('cycleSpeed').value=s.controls.cycle_speed;$('cycleSpeedValue').textContent=Number(s.controls.cycle_speed).toFixed(2)+' s';document.querySelectorAll('#cycleColors input').forEach(input=>input.checked=s.controls.cycle_colors.includes(input.value));$('brightness').value=Math.round(s.controls.brightness*100);$('brightnessValue').textContent=Math.round(s.controls.brightness*100)+'%';$('sensitivity').value=Math.round(s.controls.sensitivity*100);$('sensitivityValue').textContent=s.controls.sensitivity.toFixed(2)+'×';for(let i=0;i<addresses.length;i++){const input=s.controls.spotlight_inputs[i],level=input?Math.round(s.vocal[input-1]*100):0,sourceName=!input?'No spotlight':input<=16?`Input ${input}`:input<=22?`Aux ${input-16}`:`Main ${input===23?'L':'R'}`;$('source'+i).textContent=`DMX d${String(addresses[i]).padStart(3,'0')} · ${sourceName}`;$('v'+i).style.width=level+'%';$('v'+i+'t').textContent=level+'%'}const band=Math.round(s.band*100);$('band').style.width=band+'%';$('bandt').textContent=band+'%';const live=s.meter_age!==null&&s.meter_age<1.5;$('meterState').innerHTML='<i class="dot '+(live?'ok':'')+'"></i>'+(live?'Live':'No meter data');$('detail').textContent=`${addresses.length} fixtures · DMX updates ${s.dmx_frames} · last error: ${s.error||'none'}`}catch(e){$('meterState').innerHTML='<i class="dot"></i>Panel disconnected'}}
+async function refresh(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();const addresses=s.fixture_addresses||[];renderFixtureMeters(addresses);$('pattern').value=s.controls.pattern;$('behaviorTrigger').value=s.controls.behavior_trigger;renderMode();$('triggerDivision').value=String(s.controls.trigger_division);$('cycleLayout').value=s.controls.cycle_layout;$('chaseDirection').value=s.controls.chase_direction;$('chaseColor').value=s.controls.chase_color;$('chaseStrobe').checked=s.controls.chase_strobe;$('spotlightOverlay').checked=s.controls.spotlight_overlay;$('chaseSpeed').value=s.controls.chase_speed;$('chaseSpeedValue').textContent=Number(s.controls.chase_speed).toFixed(1)+'×';$('audioEnabled').checked=s.controls.audio_enabled;$('sensitivity').disabled=!s.controls.audio_enabled;$('cycleSpeed').value=s.controls.cycle_speed;$('cycleSpeedValue').textContent=Number(s.controls.cycle_speed).toFixed(2)+' s';document.querySelectorAll('#cycleColors input').forEach(input=>input.checked=s.controls.cycle_colors.includes(input.value));$('brightness').value=Math.round(s.controls.brightness*100);$('brightnessValue').textContent=Math.round(s.controls.brightness*100)+'%';$('sensitivity').value=Math.round(s.controls.sensitivity*100);$('sensitivityValue').textContent=s.controls.sensitivity.toFixed(2)+'×';for(let i=0;i<addresses.length;i++){const input=s.controls.spotlight_inputs[i],level=input?Math.round(s.vocal[input-1]*100):0,sourceName=!input?'No spotlight':input<=16?`Input ${input}`:input<=22?`Aux ${input-16}`:`Main ${input===23?'L':'R'}`;$('source'+i).textContent=`DMX d${String(addresses[i]).padStart(3,'0')} · ${sourceName}`;$('v'+i).style.width=level+'%';$('v'+i+'t').textContent=level+'%'}const band=Math.round(s.band*100);$('band').style.width=band+'%';$('bandt').textContent=band+'%';const live=s.meter_age!==null&&s.meter_age<1.5;$('meterState').innerHTML='<i class="dot '+(live?'ok':'')+'"></i>'+(live?'Live':'No meter data');$('detail').textContent=`${addresses.length} fixtures · DMX updates ${s.dmx_frames} · tempo ${s.tempo_bpm?Math.round(s.tempo_bpm)+' BPM':'—'} · last error: ${s.error||'none'}`}catch(e){$('meterState').innerHTML='<i class="dot"></i>Panel disconnected'}}
 refresh();setInterval(refresh,1000);
 </script></body></html>'''
 
@@ -915,12 +1023,16 @@ AUDIO_SETTINGS_HTML = r'''<!doctype html>
 <style>:root{color-scheme:dark;font:17px system-ui,-apple-system,sans-serif;background:#10131b;color:#f3f5fa}*{box-sizing:border-box}body{margin:0 auto;max-width:760px;padding:22px 18px 40px}a{color:#91caff;text-decoration:none;font-weight:650;display:inline-flex;align-items:center;min-height:44px}.settings-tabs{display:flex;gap:8px;margin:8px 0 14px}.settings-tabs a{padding:8px 14px;border:1px solid #46516a;border-radius:12px}.settings-tabs a.active{background:#252d3d;color:#fff}h1{font-size:27px;margin:8px 0 5px}.sub,.hint{color:#aeb6c7;line-height:1.5}.card{background:#1b202c;border:1px solid #30384a;border-radius:18px;padding:16px;margin:14px 0}.setting-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end}.source-label{font-size:13px;color:#aeb6c7;margin-bottom:5px}select,button,input[type=text]{font:inherit;color:inherit;background:#252d3d;border:1px solid #46516a;border-radius:12px;padding:12px 13px}select,input[type=text]{width:100%;min-height:52px}button{min-height:52px;font-weight:700;cursor:pointer}.hint{font-size:14px}.toast{min-height:24px;color:#9bc9ff;font-size:14px;margin:8px 0}@media(max-width:500px){body{padding:16px 12px}.card{padding:12px}.setting-row{grid-template-columns:1fr}}</style></head><body>
 <a href="/settings">← Settings</a><nav class="settings-tabs"><a href="/settings/fixtures">Fixtures</a><a class="active" href="/settings/audio">Audio</a></nav><h1>Audio</h1><p class="sub">Set the mixer IP address used for audio metering.</p><p><a href="/settings/audio/help">OSC setup help →</a></p>
 <section class="card"><h2>OSC audio source</h2><p class="hint">Works with Behringer XR18 and Midas MR18. Both use the same OSC meter connection.</p><label><div class="source-label">Mixer IP address</div><input id="oscIp" type="text" inputmode="decimal" autocomplete="off" placeholder="192.168.0.18"></label><p class="hint">The controller subscribes to the selected console’s OSC meter streams on UDP port 10024.</p><div class="action-row"><button class="secondary" id="testConnection">Test connection</button><button id="saveSource">Save audio source</button></div></section>
+<section class="card"><h2>Kick input for beat sync</h2><p class="hint">Choose an input with a clear kick drum signal. If the mixer channel is named “Kick” in its scribble strip, Find Kick can detect it automatically.</p><label><div class="source-label">Kick meter input</div><select id="tempoInput"><option value="0">Off</option></select></label><div class="action-row"><button class="secondary" id="findKick">Find Kick</button></div><p class="hint">Beat sync estimates tempo from repeated meter peaks. Channel-name lookup reads the XR/MR18 input names over OSC.</p></section>
 <div class="toast" id="toast">Loading settings…</div>
 <script>
 const $=id=>document.getElementById(id);
-async function load(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();$('oscIp').value=s.controls.osc_ip;$('toast').textContent='Ready'}catch(e){$('toast').textContent='Could not load settings: '+e.message}}
+for(let i=1;i<=16;i++)$('tempoInput').add(new Option(`Input ${i}`,String(i)));
+async function load(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();$('oscIp').value=s.controls.osc_ip;$('tempoInput').value=String(s.controls.tempo_input||0);$('toast').textContent='Ready'}catch(e){$('toast').textContent='Could not load settings: '+e.message}}
 $('testConnection').onclick=async()=>{const button=$('testConnection');button.disabled=true;$('toast').textContent='Testing OSC connection…';try{const r=await fetch('/api/test-osc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({osc_ip:$('oscIp').value.trim()})}),j=await r.json();if(!r.ok)throw Error(j.error||'Connection test failed');$('toast').textContent=`OSC reply received from ${j.osc_ip}`}catch(e){$('toast').textContent='Connection test failed: '+e.message}finally{button.disabled=false}};
 $('saveSource').onclick=async()=>{try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({osc_ip:$('oscIp').value.trim()})}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent='Audio source saved; reconnecting to the console'}catch(e){$('toast').textContent='Could not save audio settings: '+e.message}};
+$('tempoInput').onchange=async()=>{try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tempo_input:Number($('tempoInput').value)})}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent='Kick input saved'}catch(e){$('toast').textContent='Could not save kick input: '+e.message}};
+$('findKick').onclick=async()=>{const button=$('findKick');button.disabled=true;$('toast').textContent='Reading mixer channel names…';try{const r=await fetch('/api/find-kick',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({osc_ip:$('oscIp').value.trim()})}),j=await r.json();if(!r.ok)throw Error(j.error||'Kick not found');$('tempoInput').value=String(j.input);const saved=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tempo_input:j.input})}),result=await saved.json();if(!saved.ok)throw Error(result.error||'Could not save input');$('toast').textContent=`Found “${j.label}” on Input ${j.input}; beat sync is ready`}catch(e){$('toast').textContent=e.message}finally{button.disabled=false}};
 load();
 </script></body></html>'''
 
@@ -988,6 +1100,48 @@ def start_control_panel(controller):
         except OSError as exc:
             return jsonify(error=f"OSC probe failed: {type(exc).__name__}: {exc}"), 502
 
+    @app.post("/api/find-kick")
+    def panel_find_kick():
+        data = request.get_json(silent=True) or {}
+        source_ip = parse_ipv4_address(data.get("osc_ip", controller.controls["osc_ip"]))
+        if source_ip is None:
+            return jsonify(error="Enter a valid mixer IPv4 address"), 400
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                probe.bind(("0.0.0.0", 0))
+                probe.settimeout(0.12)
+                for channel in range(1, INPUT_CHANNEL_COUNT + 1):
+                    path = f"/ch/{channel:02d}/config/name"
+                    probe.sendto(osc_string(path) + osc_string(","), (source_ip, XR18_PORT))
+                deadline = time.monotonic() + 1.0
+                labels = {}
+                while time.monotonic() < deadline:
+                    try:
+                        response, sender = probe.recvfrom(2048)
+                    except socket.timeout:
+                        continue
+                    if sender[0] != source_ip:
+                        continue
+                    parsed = parse_osc_string_message(response)
+                    if parsed:
+                        address, label = parsed
+                        match = re.fullmatch(r"/ch/(\d{2})/config/name", address)
+                        if match:
+                            labels[int(match.group(1))] = label.strip()
+            candidates = []
+            for channel, label in labels.items():
+                normalized = re.sub(r"[^a-z0-9]+", " ", label.lower()).strip()
+                if normalized == "kick":
+                    candidates.append((0, channel, label))
+                elif "kick" in normalized or "bass drum" in normalized or normalized == "bd":
+                    candidates.append((1, channel, label))
+            if not candidates:
+                return jsonify(error="No channel named Kick was found. Name the kick channel ‘Kick’ on the mixer, or select its input manually."), 404
+            _, channel, label = sorted(candidates)[0]
+            return jsonify(input=channel, label=label)
+        except OSError as exc:
+            return jsonify(error=f"Could not read mixer channel names: {type(exc).__name__}: {exc}"), 502
+
     @app.get("/api/status")
     def panel_status():
         now = time.monotonic()
@@ -998,6 +1152,8 @@ def start_control_panel(controller):
             "effective_band_inputs": effective_band_inputs(controller.controls),
             "vocal": controller.smoothed_voice,
             "band": controller.smoothed_band,
+            "tempo_bpm": controller.tempo_bpm,
+            "tempo_input": controller.controls["tempo_input"],
             "meter_age": meter_age,
             "dmx_frames": controller.dmx_frames_submitted,
             "error": controller.last_error or controller.last_network_error,
@@ -1012,6 +1168,9 @@ def start_control_panel(controller):
             "sensitivity", "audio_enabled", "brightness", "pattern",
             "cycle_colors", "cycle_speed", "fixture_count", "fixture_enabled",
             "spotlight_inputs", "band_mode", "band_inputs", "osc_model", "osc_ip",
+            "cycle_layout", "behavior_trigger", "trigger_division", "tempo_input",
+            "spotlight_overlay", "chase_direction", "chase_speed",
+            "chase_color", "chase_strobe",
         }
         if not supported.intersection(data):
             return jsonify(error="No supported controls provided"), 400
@@ -1093,6 +1252,46 @@ def start_control_panel(controller):
                 if not 0.25 <= value <= 15.0:
                     return jsonify(error="Cycle speed must be between 0.25 and 15 seconds per color"), 400
                 updated["cycle_speed"] = value
+            enum_fields = {
+                "cycle_layout": ("unison", "spread"),
+                "behavior_trigger": ("timer", "band_peaks", "beat_sync"),
+                "chase_direction": ("forward", "reverse", "bounce"),
+            }
+            for key, choices in enum_fields.items():
+                if key in data:
+                    if data[key] not in choices:
+                        return jsonify(error=f"Invalid {key.replace('_', ' ')}"), 400
+                    updated[key] = data[key]
+            if data.get("behavior_trigger") == "beat_sync" and not data.get("tempo_input", updated["tempo_input"]):
+                return jsonify(error="Choose or find a kick input in Audio settings before using beat sync"), 400
+            if "trigger_division" in data:
+                value = data["trigger_division"]
+                if type(value) is not int or value not in (1, 2, 4, 8):
+                    return jsonify(error="trigger_division must be 1, 2, 4, or 8"), 400
+                updated["trigger_division"] = value
+            if "tempo_input" in data:
+                value = data["tempo_input"]
+                if type(value) is not int or not 0 <= value <= INPUT_CHANNEL_COUNT:
+                    return jsonify(error="tempo_input must be Off or Input 1–16"), 400
+                updated["tempo_input"] = value
+            if "spotlight_overlay" in data or "chase_strobe" in data:
+                for key in ("spotlight_overlay", "chase_strobe"):
+                    if key in data:
+                        if type(data[key]) is not bool:
+                            return jsonify(error=f"{key} must be true or false"), 400
+                        updated[key] = data[key]
+            if "chase_speed" in data:
+                try:
+                    value = float(data["chase_speed"])
+                except (TypeError, ValueError):
+                    return jsonify(error="Chase speed must be a number"), 400
+                if not 0.1 <= value <= 8.0:
+                    return jsonify(error="Chase speed must be between 0.1 and 8"), 400
+                updated["chase_speed"] = value
+            if "chase_color" in data:
+                if data["chase_color"] not in COLOR_CYCLE_PALETTE:
+                    return jsonify(error="Unknown chase color"), 400
+                updated["chase_color"] = data["chase_color"]
             if "osc_model" in data:
                 value = data["osc_model"]
                 if value not in SUPPORTED_OSC_MODELS:
@@ -1108,6 +1307,9 @@ def start_control_panel(controller):
                 "audio_enabled", "pattern", "cycle_colors", "cycle_speed",
                 "fixture_count", "fixture_enabled", "spotlight_inputs",
                 "band_mode", "band_inputs", "osc_model", "osc_ip",
+                "cycle_layout", "behavior_trigger", "trigger_division", "tempo_input",
+                "spotlight_overlay", "chase_direction", "chase_speed",
+                "chase_color", "chase_strobe",
             }
             if persistent_keys.intersection(data):
                 try:
@@ -1125,10 +1327,17 @@ def start_control_panel(controller):
             controller.fixture_addresses = new_addresses
             if updated["audio_enabled"] != previous["audio_enabled"]:
                 controller.clear_audio_response()
+            if updated["tempo_input"] != previous["tempo_input"]:
+                controller.tempo_beat_events = 0
+                controller.tempo_bpm = None
+                controller.tempo_intervals.clear()
+                controller.tempo_last_beat = None
+                controller.tempo_armed = True
             if (
                 updated["pattern"] != previous["pattern"]
                 or updated["cycle_colors"] != previous["cycle_colors"]
                 or updated["cycle_speed"] != previous["cycle_speed"]
+                or updated["chase_speed"] != previous["chase_speed"]
             ):
                 controller.color_cycle_started = time.monotonic()
             if updated["osc_ip"] != previous["osc_ip"] or updated["osc_model"] != previous["osc_model"]:

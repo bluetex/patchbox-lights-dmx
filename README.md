@@ -71,11 +71,14 @@ python3 lights.py
 
 The app serves a mobile-friendly web panel on port 8080. Open
 `http://<pi-address>:8080/` from a device on the same private network. The panel
-provides brightness and sensitivity controls, pattern selection, and fixture
-and input assignments. **Audio response** can be turned off while the chosen
-ambient pattern continues. The **Color cycle** pattern lets you select colors
-and set the seconds per color; assigned meter peaks still flash their fixture
-white while audio response is on.
+provides Spotlight, Color cycle, Chase, and Blackout modes, along with
+brightness and sensitivity controls. Color cycle and Chase can advance on a
+timer, band peaks, or beat estimates from a selected kick input. Name the kick
+channel `Kick` in the XR18/MR18 scribble strip and use **Find Kick** in Audio
+settings to assign it automatically; manual Input 1–16 selection is also
+available. Color cycle supports chosen palettes and unison or spread fixture
+colors. Chase supports direction and optional strobing. Meter-triggered white
+spotlights can remain overlaid on other effects.
 
 The Settings page lets you select the supported console and its OSC IP address,
 and choose the fixture count. The current seven-channel fixture layout assigns
