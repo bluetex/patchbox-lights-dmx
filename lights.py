@@ -28,7 +28,7 @@ MAX_FIXTURE_COUNT = 512 // FIXTURE_CHANNELS
 
 MIN_VOICE_FLOOR_DB = -60.0
 MAX_VOICE_CEILING_DB = -6.0
-VOCAL_THRESHOLD_LEVEL = 0.8
+VOCAL_THRESHOLD_DB = -10.0
 VOCAL_RELEASE_DB = -24.0
 VOCAL_PEAK_HOLD_SECONDS = 1.0
 VOCAL_PEAK_RETRIGGER_DELTA = 0.08
@@ -719,7 +719,7 @@ class LightingController:
             if self.voice_peak_levels[index] <= 0.01:
                 self.voice_peak_active[index] = False
                 self.voice_captured_peaks[index] = 0.0
-            if level >= VOCAL_THRESHOLD_LEVEL:
+            if level_db >= VOCAL_THRESHOLD_DB:
                 if not self.voice_peak_active[index]:
                     self.voice_peak_active[index] = True
                     self.voice_captured_peaks[index] = level
@@ -815,7 +815,7 @@ class LightingController:
             if self.voice_peak_levels[index] <= 0.01:
                 self.voice_peak_active[index] = False
                 self.voice_captured_peaks[index] = 0.0
-            if level >= VOCAL_THRESHOLD_LEVEL:
+            if level_db >= VOCAL_THRESHOLD_DB:
                 if not self.voice_peak_active[index]:
                     self.voice_peak_active[index] = True
                     self.voice_captured_peaks[index] = level
