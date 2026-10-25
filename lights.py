@@ -821,7 +821,7 @@ def start_control_panel(controller):
             if not isinstance(value, list) or any(type(item) is not int or not 1 <= item <= INPUT_CHANNEL_COUNT for item in value) or len(set(value)) != len(value):
                 return jsonify(error="band_inputs must be a list of unique inputs from 1 to 16"), 400
             updated["band_inputs"] = value
-        if not any(key in data for key in ("sensitivity", "brightness", "pattern", "fixture_enabled", "spotlight_inputs", "band_mode", "band_inputs")):
+        if not any(key in data for key in ("sensitivity", "brightness", "pattern", "fixture_enabled", "spotlight_inputs", "band_mode", "band_inputs", "cycle_colors", "cycle_speed")):
             return jsonify(error="No supported controls provided"), 400
         if "cycle_colors" in data:
             value = data["cycle_colors"]
