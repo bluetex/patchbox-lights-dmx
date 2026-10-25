@@ -96,7 +96,7 @@ OUTPUT_METER_STREAM = "/meters/5"
 AVAILABLE_PATTERNS = {"spotlight", "color_cycle", "chase", "blackout"}
 LEGACY_PATTERN_MAP = {
     "auto": "spotlight", "ambient": "spotlight", "unison": "spotlight", "mixed": "spotlight",
-    "chase_forward": "chase", "chase_reverse": "chase",
+    "chase": "color_cycle", "chase_forward": "color_cycle", "chase_reverse": "color_cycle",
 }
 DEFAULT_CONTROLS = {
     "sensitivity": 1.0,
@@ -109,6 +109,8 @@ DEFAULT_CONTROLS = {
     "cycle_speed": 1.5,
     "cycle_layout": "unison",
     "cycle_transition": "cut",
+    "cycle_style": "cycle",
+    "concurrent_fixtures": 2,
     "behavior_trigger": "timer",
     "trigger_division": 1,
     "tempo_input": 0,
@@ -280,6 +282,11 @@ def load_control_settings():
             cycle_colors = saved.get("cycle_colors", controls["cycle_colors"])
             cycle_speed = float(saved.get("cycle_speed", controls["cycle_speed"]))
             cycle_transition = saved.get("cycle_transition", controls["cycle_transition"])
+            cycle_style = saved.get(
+                "cycle_style",
+                "chase" if saved_pattern in ("chase", "chase_forward", "chase_reverse") else controls["cycle_style"],
+            )
+            concurrent_fixtures = saved.get("concurrent_fixtures", controls["concurrent_fixtures"])
             audio_enabled = saved.get("audio_enabled", controls["audio_enabled"])
             osc_model = saved.get("osc_model", controls["osc_model"])
             osc_ip = parse_ipv4_address(saved.get("osc_ip", controls["osc_ip"]))
@@ -320,6 +327,12 @@ def load_control_settings():
                 controls["cycle_layout"] = cycle_layout
             if cycle_transition in ("cut", "fade"):
                 controls["cycle_transition"] = cycle_transition
+            if cycle_style in ("cycle", "chase"):
+                controls["cycle_style"] = cycle_style
+            if type(concurrent_fixtures) is int and 1 <= concurrent_fixtures <= fixture_count:
+                controls["concurrent_fixtures"] = concurrent_fixtures
+            else:
+                controls["concurrent_fixtures"] = min(controls["concurrent_fixtures"], fixture_count)
             behavior_trigger = saved.get("behavior_trigger", controls["behavior_trigger"])
             if behavior_trigger in ("timer", "band_peaks", "beat_sync"):
                 controls["behavior_trigger"] = behavior_trigger
@@ -632,6 +645,8 @@ class LightingController:
         now = time.monotonic()
         controls = self.controls
         pattern = controls["pattern"]
+        chase_active = pattern == "color_cycle" and controls["cycle_style"] == "chase"
+        palette_cycle_active = pattern == "color_cycle" and not chase_active
         fixture_count = len(self.fixture_addresses)
         band_ambient_level = (
             self.band_swell_level
@@ -644,7 +659,7 @@ class LightingController:
             ambient_level = band_ambient_level * (1.0 - kick_weight) + kick_ambient_level * kick_weight
         else:
             kick_weight = 0.0
-            ambient_level = 0.55 if pattern in ("color_cycle", "chase") else band_ambient_level
+            ambient_level = 0.55 if pattern == "color_cycle" else band_ambient_level
         trigger = controls["behavior_trigger"]
         division = controls["trigger_division"]
         if trigger == "band_peaks":
@@ -652,13 +667,13 @@ class LightingController:
         elif trigger == "beat_sync":
             event_step = self.tempo_beat_events // division
         else:
-            if pattern == "chase":
+            if chase_active:
                 event_step = int((now - self.color_cycle_started) * controls["chase_speed"])
             else:
                 event_step = int((now - self.color_cycle_started) / max(0.1, controls["cycle_speed"]))
 
         cycle_fade = 1.0
-        if pattern == "color_cycle":
+        if palette_cycle_active:
             if self.last_cycle_event_step is None:
                 self.last_cycle_event_step = event_step
                 self.cycle_transition_from_step = event_step
@@ -720,8 +735,12 @@ class LightingController:
                 self.set_fixture_color(address, (white, white, white))
                 continue
 
-            if pattern == "color_cycle":
-                fixture_offset = index if controls["cycle_layout"] == "spread" else 0
+            if palette_cycle_active:
+                fixture_offset = (
+                    index // controls["concurrent_fixtures"]
+                    if controls["cycle_layout"] == "spread"
+                    else 0
+                )
                 color_index = (base_color_index + fixture_offset) % len(colors)
                 rgb = COLOR_CYCLE_PALETTE[colors[color_index]]
                 if controls["cycle_transition"] == "fade" and self.cycle_transition_from_step is not None:
@@ -731,9 +750,22 @@ class LightingController:
                     previous_rgb = COLOR_CYCLE_PALETTE[colors[previous_index]]
                     rgb = blend_rgb(previous_rgb, rgb, cycle_fade)
                 rgb = tuple(int(channel * ambient_level * AMBIENT_INTENSITY) for channel in rgb)
-            elif pattern == "chase":
+            elif chase_active:
                 rgb = COLOR_CYCLE_PALETTE[controls["chase_color"]]
-                distance = abs(index - chase_position)
+                if controls["chase_direction"] == "reverse":
+                    travel_direction = -1
+                elif controls["chase_direction"] == "bounce" and fixture_count > 1:
+                    travel_direction = 1 if phase < fixture_count - 1 else -1
+                else:
+                    travel_direction = 1
+                active_positions = {
+                    (chase_position + travel_direction * offset) % fixture_count
+                    for offset in range(controls["concurrent_fixtures"])
+                }
+                distance = min(
+                    min(abs(index - position), fixture_count - abs(index - position))
+                    for position in active_positions
+                )
                 gain = 1.0 if distance == 0 else (0.18 if distance == 1 else 0.05)
                 rgb = tuple(int(channel * gain * ambient_level) for channel in rgb)
             else:
@@ -752,7 +784,7 @@ class LightingController:
                     rgb = tuple(int(channel * gain) for channel in rgb)
 
             strobe = 0
-            if pattern == "chase" and controls["chase_strobe"] and index == chase_position:
+            if chase_active and controls["chase_strobe"] and index in active_positions:
                 strobe = BAND_STROBE_DMX
             self.set_fixture_color(address, rgb, strobe=strobe)
 
@@ -1117,10 +1149,10 @@ PANEL_HTML = r'''<!doctype html>
 <header class="page-header"><h1>Patchbox Lights</h1><a class="settings-link" href="/settings">Settings →</a></header>
 <p class="sub">Live controls · same private network</p>
 <section class="card"><div class="label"><span>Mode</span><span class="value" id="patternName">Spotlight</span></div>
-<select id="pattern" aria-label="Lighting mode"><option value="spotlight">Spotlight · meter driven</option><option value="color_cycle">Color cycle</option><option value="chase">Chase</option></select>
+<select id="pattern" aria-label="Lighting mode"><option value="spotlight">Spotlight · meter driven</option><option value="color_cycle">Color cycle</option></select>
 <div id="effectSettings" hidden><div id="triggerSettings"><label class="small">Effect advances on<select id="behaviorTrigger"><option value="timer">Timer</option><option value="band_peaks">Band peaks</option><option value="beat_sync">Kick beat sync</option></select></label><p class="small" id="triggerHelp">Kick beat sync uses the selected kick input to advance color and chase effects. White spotlights keep following their assigned meters.</p><label class="small" id="divisionWrap" hidden>Advance effect every<select id="triggerDivision"><option value="1">1 beat / peak</option><option value="2">2 beats / peaks</option><option value="4">4 beats / peaks</option><option value="8">8 beats / peaks</option></select></label></div>
-<div id="cycleSettings" hidden><p class="small cycle-intro">Choose the colors and whether fixtures change together or spread across the palette.</p><div class="color-grid" id="cycleColors"><label class="color-choice"><input type="checkbox" value="Purple"><i class="color-dot" style="background:#a030ff"></i>Purple</label><label class="color-choice"><input type="checkbox" value="Green"><i class="color-dot" style="background:#00ff3c"></i>Green</label><label class="color-choice"><input type="checkbox" value="Teal"><i class="color-dot" style="background:#00d2be"></i>Teal</label><label class="color-choice"><input type="checkbox" value="Magenta"><i class="color-dot" style="background:#ff00b4"></i>Magenta</label><label class="color-choice"><input type="checkbox" value="Blue"><i class="color-dot" style="background:#1450ff"></i>Blue</label><label class="color-choice"><input type="checkbox" value="Cyan"><i class="color-dot" style="background:#00dcff"></i>Cyan</label><label class="color-choice"><input type="checkbox" value="Amber"><i class="color-dot" style="background:#ff9600"></i>Amber</label><label class="color-choice"><input type="checkbox" value="Red"><i class="color-dot" style="background:#ff1818"></i>Red</label></div><label class="small">Fixture layout<select id="cycleLayout"><option value="unison">Unison colors</option><option value="spread">Spread colors</option></select></label><label class="small">Color transition<select id="cycleTransition"><option value="cut">Cut · immediate change</option><option value="fade">Fade · 0.5 seconds</option></select></label><p class="small">Fade blends between the previous and next colors each time the cycle advances.</p><div class="cycle-speed"><div class="label"><span>Seconds per color</span><span class="value" id="cycleSpeedValue">1.50 s</span></div><input id="cycleSpeed" type="range" min="0.25" max="15" step="0.25" value="1.5" aria-label="Seconds per color"></div></div>
-<div id="chaseSettings" hidden><label class="small">Chase color<select id="chaseColor"></select></label><label class="small">Direction<select id="chaseDirection"><option value="forward">Forward · 1 to 4</option><option value="reverse">Reverse · 4 to 1</option><option value="bounce">Bounce</option></select></label><div class="cycle-speed"><div class="label"><span>Chase speed</span><span class="value" id="chaseSpeedValue">1.00×</span></div><input id="chaseSpeed" type="range" min="0.1" max="8" step="0.1" value="1" aria-label="Chase speed"></div><label class="small"><input id="chaseStrobe" type="checkbox"> Strobe the active fixture</label></div>
+<div id="cycleSettings" hidden><label class="small">Behavior<select id="cycleStyle"><option value="cycle">Cycle through colors</option><option value="chase">Chase a color</option></select></label><label class="small"><span id="concurrentLabel">Fixtures per color</span><select id="concurrentFixtures"></select></label><p class="small" id="concurrentHelp">In spread mode, this many neighboring fixtures share each color.</p><div id="cyclePaletteSettings"><p class="small cycle-intro">Choose the colors and whether fixtures change together or spread across the palette.</p><div class="color-grid" id="cycleColors"><label class="color-choice"><input type="checkbox" value="Purple"><i class="color-dot" style="background:#a030ff"></i>Purple</label><label class="color-choice"><input type="checkbox" value="Green"><i class="color-dot" style="background:#00ff3c"></i>Green</label><label class="color-choice"><input type="checkbox" value="Teal"><i class="color-dot" style="background:#00d2be"></i>Teal</label><label class="color-choice"><input type="checkbox" value="Magenta"><i class="color-dot" style="background:#ff00b4"></i>Magenta</label><label class="color-choice"><input type="checkbox" value="Blue"><i class="color-dot" style="background:#1450ff"></i>Blue</label><label class="color-choice"><input type="checkbox" value="Cyan"><i class="color-dot" style="background:#00dcff"></i>Cyan</label><label class="color-choice"><input type="checkbox" value="Amber"><i class="color-dot" style="background:#ff9600"></i>Amber</label><label class="color-choice"><input type="checkbox" value="Red"><i class="color-dot" style="background:#ff1818"></i>Red</label></div><label class="small">Fixture layout<select id="cycleLayout"><option value="unison">Unison colors</option><option value="spread">Spread colors</option></select></label><label class="small">Color transition<select id="cycleTransition"><option value="cut">Cut · immediate change</option><option value="fade">Fade · 0.5 seconds</option></select></label><p class="small">Fade blends between the previous and next colors each time the cycle advances.</p><div class="cycle-speed"><div class="label"><span>Seconds per color</span><span class="value" id="cycleSpeedValue">1.50 s</span></div><input id="cycleSpeed" type="range" min="0.25" max="15" step="0.25" value="1.5" aria-label="Seconds per color"></div></div>
+<div id="chaseSettings" hidden><label class="small">Chase color<select id="chaseColor"></select></label><label class="small">Direction<select id="chaseDirection"><option value="forward">Forward · 1 to 4</option><option value="reverse">Reverse · 4 to 1</option><option value="bounce">Bounce</option></select></label><div class="cycle-speed"><div class="label"><span>Chase speed</span><span class="value" id="chaseSpeedValue">1.00×</span></div><input id="chaseSpeed" type="range" min="0.1" max="8" step="0.1" value="1" aria-label="Chase speed"></div><label class="small"><input id="chaseStrobe" type="checkbox"> Strobe the active fixtures</label></div>
 <label class="small"><input id="spotlightOverlay" type="checkbox" checked> Keep meter triggered white spotlights over this effect</label></div>
 <div class="toast" id="toast"></div></section>
 <section class="card"><div class="label"><span>Brightness</span><span class="value" id="brightnessValue">100%</span></div><input id="brightness" type="range" min="0" max="100" value="100" aria-label="Brightness"></section>
@@ -1128,7 +1160,7 @@ PANEL_HTML = r'''<!doctype html>
 <section class="card"><div class="status"><strong>Meter input</strong><span class="small" id="meterState"><i class="dot"></i>Connecting</span></div><div id="fixtureMeters"></div><div class="meter"><span>Band</span><div class="track"><div class="fill" id="band"></div></div><span id="bandt">0%</span></div><div class="small" id="detail">Waiting for status…</div></section>
 <div class="row"><button id="auto">Spotlight mode</button><button class="blackout" id="blackout" aria-pressed="false">Blackout</button></div>
 <script>
-const $=id=>document.getElementById(id), names={spotlight:'Spotlight',color_cycle:'Color cycle',chase:'Chase',blackout:'Blackout'},palette=['Purple','Green','Teal','Magenta','Blue','Cyan','Amber','Red'];let timer,currentControls=null,inputNames={},outputNames={aux:{},main:''};
+const $=id=>document.getElementById(id), names={spotlight:'Spotlight',color_cycle:'Color cycle',blackout:'Blackout'},palette=['Purple','Green','Teal','Magenta','Blue','Cyan','Amber','Red'];let timer,currentControls=null,inputNames={},outputNames={aux:{},main:''};
 async function control(values){try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)});const j=await r.json();if(!r.ok)throw Error(j.error||'Request failed');$('toast').textContent='Control updated';setTimeout(()=>{$('toast').textContent=''},1300)}catch(e){$('toast').textContent='Could not update: '+e.message}}
 function delayed(value){clearTimeout(timer);timer=setTimeout(()=>control(value),110)}
 $('brightness').addEventListener('input',e=>{$('brightnessValue').textContent=e.target.value+'%';delayed({brightness:Number(e.target.value)/100})});
@@ -1140,14 +1172,15 @@ document.querySelectorAll('#cycleColors input').forEach(input=>input.onchange=()
 function setCycleSpeed(value,save){$('cycleSpeed').value=value;$('cycleSpeedValue').textContent=Number(value).toFixed(2)+' s';if(save)delayed({cycle_speed:Number(value)})}
 $('cycleSpeed').addEventListener('input',e=>setCycleSpeed(e.target.value,true));
 function renderBlackout(active){const button=$('blackout');button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));button.textContent=active?'Blackout ON':'Blackout'}
-function renderMode(){const pattern=$('pattern').value;$('patternName').textContent=names[pattern]||pattern;$('effectSettings').hidden=pattern==='blackout';$('triggerSettings').hidden=pattern==='spotlight';$('cycleSettings').hidden=pattern!=='color_cycle';$('chaseSettings').hidden=pattern!=='chase';$('behaviorTrigger').options[0].text='Timer';$('divisionWrap').hidden=$('behaviorTrigger').value==='timer';$('triggerHelp').hidden=$('behaviorTrigger').value!=='beat_sync';renderBlackout(Boolean(currentControls&&currentControls.blackout));renderAudioSlider()}
+function renderMode(){const pattern=$('pattern').value,cycle=$('cycleStyle').value,chasing=cycle==='chase',unison=$('cycleLayout').value==='unison';$('patternName').textContent=names[pattern]||pattern;$('effectSettings').hidden=pattern==='blackout';$('triggerSettings').hidden=pattern==='spotlight';$('cycleSettings').hidden=pattern!=='color_cycle';$('cyclePaletteSettings').hidden=pattern!=='color_cycle'||chasing;$('chaseSettings').hidden=pattern!=='color_cycle'||!chasing;$('concurrentLabel').textContent=chasing?'Concurrent active fixtures':'Fixtures per color';$('concurrentFixtures').disabled=pattern==='color_cycle'&&!chasing&&unison;$('concurrentHelp').textContent=chasing?'This many neighboring fixtures carry the chase color together.':unison?'Unison gives every fixture the same color; choose Spread to use this group size.':'In spread mode, this many neighboring fixtures share each color.';$('behaviorTrigger').options[0].text='Timer';$('divisionWrap').hidden=$('behaviorTrigger').value==='timer';$('triggerHelp').hidden=$('behaviorTrigger').value!=='beat_sync';renderBlackout(Boolean(currentControls&&currentControls.blackout));renderAudioSlider()}
 function kickInputLabel(input=Number(currentControls?.tempo_input||0)){if(!input)return 'Kick input not selected';return inputNames[input]?`${inputNames[input]} · Input ${input}`:`Input ${input} (name unavailable)`}
 function renderAudioSlider(){if(!currentControls)return;const spotlight=$('pattern').value==='spotlight',kickSelected=Number(currentControls.tempo_input)>0,kickName=kickInputLabel();$('sensitivity').value=String(Math.round(currentControls.sensitivity*100));$('sensitivity').disabled=!currentControls.audio_enabled;$('sensitivityValue').textContent=currentControls.sensitivity.toFixed(2)+'×';$('spotlightInfluenceWrap').hidden=!spotlight;$('kickInfluence').value=String(Math.round(currentControls.kick_influence*100));$('kickInfluence').disabled=!currentControls.audio_enabled||!kickSelected;$('kickInfluenceLabel').textContent=`Spotlight Band input ↔ ${kickName} influence`;$('kickInfluenceValue').textContent=`Band ${100-Math.round(currentControls.kick_influence*100)}% · ${kickName} ${Math.round(currentControls.kick_influence*100)}%`;$('kickInfluenceHelp').textContent=kickSelected?`Balances ambient band lighting between assigned band inputs and ${kickName}. White spotlights still follow their assigned meter inputs.`:'Find or select a kick input in Audio settings to enable Kick influence.';$('behaviorTrigger').options[2].textContent=`Kick beat sync · ${kickName}`}
-function bindSelect(id,key){$(id).onchange=()=>control({[key]:key==='trigger_division'?Number($(id).value):$(id).value})}bindSelect('behaviorTrigger','behavior_trigger');bindSelect('triggerDivision','trigger_division');bindSelect('cycleLayout','cycle_layout');bindSelect('cycleTransition','cycle_transition');bindSelect('chaseDirection','chase_direction');bindSelect('chaseColor','chase_color');$('behaviorTrigger').onchange=()=>{renderMode();control({behavior_trigger:$('behaviorTrigger').value})};$('spotlightOverlay').onchange=()=>control({spotlight_overlay:$('spotlightOverlay').checked});$('chaseStrobe').onchange=()=>control({chase_strobe:$('chaseStrobe').checked});$('chaseSpeed').oninput=e=>{$('chaseSpeedValue').textContent=Number(e.target.value).toFixed(1)+'×';delayed({chase_speed:Number(e.target.value)})};palette.forEach(color=>$('chaseColor').add(new Option(color,color)));
+function bindSelect(id,key){$(id).onchange=()=>control({[key]:['trigger_division','concurrent_fixtures'].includes(key)?Number($(id).value):$(id).value})}bindSelect('behaviorTrigger','behavior_trigger');bindSelect('triggerDivision','trigger_division');bindSelect('cycleLayout','cycle_layout');bindSelect('cycleTransition','cycle_transition');bindSelect('cycleStyle','cycle_style');bindSelect('concurrentFixtures','concurrent_fixtures');bindSelect('chaseDirection','chase_direction');bindSelect('chaseColor','chase_color');$('behaviorTrigger').onchange=()=>{renderMode();control({behavior_trigger:$('behaviorTrigger').value})};$('cycleStyle').onchange=()=>{renderMode();control({cycle_style:$('cycleStyle').value})};$('cycleLayout').onchange=()=>{renderMode();control({cycle_layout:$('cycleLayout').value})};$('spotlightOverlay').onchange=()=>control({spotlight_overlay:$('spotlightOverlay').checked});$('chaseStrobe').onchange=()=>control({chase_strobe:$('chaseStrobe').checked});$('chaseSpeed').oninput=e=>{$('chaseSpeedValue').textContent=Number(e.target.value).toFixed(1)+'×';delayed({chase_speed:Number(e.target.value)})};palette.forEach(color=>$('chaseColor').add(new Option(color,color)));
 function renderFixtureMeters(addresses){const root=$('fixtureMeters'),count=addresses.length;if(root.dataset.count===String(count))return;root.dataset.count=count;root.innerHTML='';addresses.forEach((address,index)=>{const row=document.createElement('div');row.className='meter';row.innerHTML=`<span class="meter-name"><strong>Fixture ${index+1}</strong><small id="source${index}"></small></span><div class="track"><div class="fill" id="v${index}"></div></div><span id="v${index}t">0%</span>`;root.appendChild(row)})}
 function renderKickMeter(status){const input=Number(status.controls.tempo_input||0),root=$('fixtureMeters');let row=$('kickMeterRow');if(!input){if(row)row.remove();return}if(!row){row=document.createElement('div');row.className='meter';row.id='kickMeterRow';const label=document.createElement('span');label.className='meter-name';const title=document.createElement('strong');title.id='kickMeterTitle';const source=document.createElement('small');source.id='kickMeterSource';label.append(title,source);const track=document.createElement('div');track.className='track';const fill=document.createElement('div');fill.className='fill';fill.id='kickMeterFill';track.appendChild(fill);const value=document.createElement('span');value.id='kickMeterValue';value.textContent='0%';row.append(label,track,value);root.appendChild(row)}const level=Math.round((status.vocal[input-1]||0)*100);$('kickMeterTitle').textContent=inputNames[input]||`Input ${input}`;$('kickMeterSource').textContent=`Kick sync · Input ${input}`;$('kickMeterFill').style.width=level+'%';$('kickMeterValue').textContent=level+'%'}
 async function loadInputNames(){try{const r=await fetch('/api/input-names',{cache:'no-store'}),j=await r.json();inputNames=j.inputs||{};outputNames=j.outputs||{aux:{},main:''}}catch(e){inputNames={};outputNames={aux:{},main:''}}}
-async function refresh(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();const addresses=s.fixture_addresses||[];currentControls=s.controls;renderFixtureMeters(addresses);renderKickMeter(s);$('pattern').value=s.controls.pattern;$('behaviorTrigger').value=s.controls.behavior_trigger;renderMode();$('triggerDivision').value=String(s.controls.trigger_division);$('cycleLayout').value=s.controls.cycle_layout;$('cycleTransition').value=s.controls.cycle_transition;$('chaseDirection').value=s.controls.chase_direction;$('chaseColor').value=s.controls.chase_color;$('chaseStrobe').checked=s.controls.chase_strobe;$('spotlightOverlay').checked=s.controls.spotlight_overlay;$('chaseSpeed').value=s.controls.chase_speed;$('chaseSpeedValue').textContent=Number(s.controls.chase_speed).toFixed(1)+'×';$('audioEnabled').checked=s.controls.audio_enabled;$('sensitivity').disabled=!s.controls.audio_enabled;$('cycleSpeed').value=s.controls.cycle_speed;$('cycleSpeedValue').textContent=Number(s.controls.cycle_speed).toFixed(2)+' s';document.querySelectorAll('#cycleColors input').forEach(input=>input.checked=s.controls.cycle_colors.includes(input.value));$('brightness').value=Math.round(s.controls.brightness*100);$('brightnessValue').textContent=Math.round(s.controls.brightness*100)+'%';renderAudioSlider();for(let i=0;i<addresses.length;i++){const input=s.controls.spotlight_inputs[i],level=input?Math.round(s.vocal[input-1]*100):0,sourceName=!input?'No spotlight':input<=16?(inputNames[input]?`${inputNames[input]} (Input ${input})`:`Input ${input}`):input<=22?(outputNames.aux[input-16]?`Aux ${input-16} · ${outputNames.aux[input-16]}`:`Aux ${input-16}`):(outputNames.main?`Main ${input===23?'L':'R'} · ${outputNames.main}`:`Main ${input===23?'L':'R'} · ${outputNames.main}`);$('source'+i).textContent=`DMX d${String(addresses[i]).padStart(3,'0')} · ${sourceName}`;$('v'+i).style.width=level+'%';$('v'+i+'t').textContent=level+'%'}const band=Math.round(s.band*100);$('band').style.width=band+'%';$('bandt').textContent=band+'%';const live=s.meter_age!==null&&s.meter_age<1.5;$('meterState').innerHTML='<i class="dot '+(live?'ok':'')+'"></i>'+(live?'Live':'No meter data');$('detail').textContent=`${addresses.length} fixtures · DMX updates ${s.dmx_frames} · tempo ${s.tempo_bpm?Math.round(s.tempo_bpm)+' BPM':'—'} · last error: ${s.error||'none'}`}catch(e){$('meterState').innerHTML='<i class="dot"></i>Panel disconnected'}}
+function populateConcurrentFixtures(count,selected){const select=$('concurrentFixtures'),total=Math.max(1,count);if(select.options.length!==total){select.innerHTML='';for(let n=1;n<=total;n++)select.add(new Option(String(n),String(n)))}select.value=String(Math.max(1,Math.min(total,selected||1)))}
+async function refresh(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();const addresses=s.fixture_addresses||[];currentControls=s.controls;renderFixtureMeters(addresses);renderKickMeter(s);populateConcurrentFixtures(addresses.length,s.controls.concurrent_fixtures);$('pattern').value=s.controls.pattern;$('cycleStyle').value=s.controls.cycle_style;$('cycleLayout').value=s.controls.cycle_layout;$('behaviorTrigger').value=s.controls.behavior_trigger;renderMode();$('triggerDivision').value=String(s.controls.trigger_division);$('cycleTransition').value=s.controls.cycle_transition;$('chaseDirection').value=s.controls.chase_direction;$('chaseColor').value=s.controls.chase_color;$('chaseStrobe').checked=s.controls.chase_strobe;$('spotlightOverlay').checked=s.controls.spotlight_overlay;$('chaseSpeed').value=s.controls.chase_speed;$('chaseSpeedValue').textContent=Number(s.controls.chase_speed).toFixed(1)+'×';$('audioEnabled').checked=s.controls.audio_enabled;$('sensitivity').disabled=!s.controls.audio_enabled;$('cycleSpeed').value=s.controls.cycle_speed;$('cycleSpeedValue').textContent=Number(s.controls.cycle_speed).toFixed(2)+' s';document.querySelectorAll('#cycleColors input').forEach(input=>input.checked=s.controls.cycle_colors.includes(input.value));$('brightness').value=Math.round(s.controls.brightness*100);$('brightnessValue').textContent=Math.round(s.controls.brightness*100)+'%';renderAudioSlider();for(let i=0;i<addresses.length;i++){const input=s.controls.spotlight_inputs[i],level=input?Math.round(s.vocal[input-1]*100):0,sourceName=!input?'No spotlight':input<=16?(inputNames[input]?`${inputNames[input]} (Input ${input})`:`Input ${input}`):input<=22?(outputNames.aux[input-16]?`Aux ${input-16} · ${outputNames.aux[input-16]}`:`Aux ${input-16}`):(outputNames.main?`Main ${input===23?'L':'R'} · ${outputNames.main}`:`Main ${input===23?'L':'R'} · ${outputNames.main}`);$('source'+i).textContent=`DMX d${String(addresses[i]).padStart(3,'0')} · ${sourceName}`;$('v'+i).style.width=level+'%';$('v'+i+'t').textContent=level+'%'}const band=Math.round(s.band*100);$('band').style.width=band+'%';$('bandt').textContent=band+'%';const live=s.meter_age!==null&&s.meter_age<1.5;$('meterState').innerHTML='<i class="dot '+(live?'ok':'')+'"></i>'+(live?'Live':'No meter data');$('detail').textContent=`${addresses.length} fixtures · DMX updates ${s.dmx_frames} · tempo ${s.tempo_bpm?Math.round(s.tempo_bpm)+' BPM':'—'} · last error: ${s.error||'none'}`}catch(e){$('meterState').innerHTML='<i class="dot"></i>Panel disconnected'}}
 loadInputNames().then(refresh);setInterval(refresh,1000);setInterval(loadInputNames,60000);
 </script></body></html>'''
 
@@ -1366,7 +1399,8 @@ def start_control_panel(controller):
             return jsonify(error="Send a JSON object"), 400
         supported = {
             "sensitivity", "band_sensitivity", "audio_enabled", "brightness", "pattern", "blackout",
-            "cycle_colors", "cycle_speed", "cycle_transition", "fixture_count", "fixture_enabled",
+            "cycle_colors", "cycle_speed", "cycle_transition", "cycle_style", "concurrent_fixtures",
+            "fixture_count", "fixture_enabled",
             "spotlight_inputs", "band_mode", "band_inputs", "osc_model", "osc_ip",
             "cycle_layout", "behavior_trigger", "trigger_division", "tempo_input", "kick_sensitivity",
             "kick_influence", "spotlight_overlay", "chase_direction", "chase_speed",
@@ -1414,7 +1448,9 @@ def start_control_panel(controller):
                 if value == "blackout":
                     updated["blackout"] = True
                 else:
-                    updated["pattern"] = value
+                    updated["pattern"] = "color_cycle" if value == "chase" else value
+                    if value == "chase":
+                        updated["cycle_style"] = "chase"
                     updated["blackout"] = False
             if "blackout" in data:
                 value = data["blackout"]
@@ -1431,6 +1467,12 @@ def start_control_panel(controller):
                 updated["fixture_enabled"] = old_enabled[:value] + [True] * max(0, value - len(old_enabled))
                 updated["spotlight_inputs"] = old_spotlights[:value] + [0] * max(0, value - len(old_spotlights))
             count = updated["fixture_count"]
+            updated["concurrent_fixtures"] = min(updated["concurrent_fixtures"], count)
+            if "concurrent_fixtures" in data:
+                value = data["concurrent_fixtures"]
+                if type(value) is not int or not 1 <= value <= count:
+                    return jsonify(error=f"concurrent_fixtures must be between 1 and the fixture count ({count})"), 400
+                updated["concurrent_fixtures"] = value
             if "fixture_enabled" in data:
                 value = data["fixture_enabled"]
                 if not isinstance(value, list) or len(value) != count or any(type(item) is not bool for item in value):
@@ -1472,6 +1514,7 @@ def start_control_panel(controller):
             enum_fields = {
                 "cycle_layout": ("unison", "spread"),
                 "cycle_transition": ("cut", "fade"),
+                "cycle_style": ("cycle", "chase"),
                 "behavior_trigger": ("timer", "band_peaks", "beat_sync"),
                 "chase_direction": ("forward", "reverse", "bounce"),
             }
@@ -1538,7 +1581,8 @@ def start_control_panel(controller):
                 updated["osc_ip"] = value
 
             persistent_keys = {
-                "audio_enabled", "pattern", "blackout", "cycle_colors", "cycle_speed", "cycle_transition", "band_sensitivity",
+                "audio_enabled", "pattern", "blackout", "cycle_colors", "cycle_speed", "cycle_transition",
+                "cycle_style", "concurrent_fixtures", "band_sensitivity",
                 "fixture_count", "fixture_enabled", "spotlight_inputs",
                 "band_mode", "band_inputs", "osc_model", "osc_ip",
                 "cycle_layout", "behavior_trigger", "trigger_division", "tempo_input", "kick_sensitivity",
@@ -1573,6 +1617,8 @@ def start_control_panel(controller):
                 or updated["cycle_speed"] != previous["cycle_speed"]
                 or updated["cycle_layout"] != previous["cycle_layout"]
                 or updated["cycle_transition"] != previous["cycle_transition"]
+                or updated["cycle_style"] != previous["cycle_style"]
+                or updated["concurrent_fixtures"] != previous["concurrent_fixtures"]
                 or updated["behavior_trigger"] != previous["behavior_trigger"]
                 or updated["trigger_division"] != previous["trigger_division"]
                 or updated["chase_speed"] != previous["chase_speed"]

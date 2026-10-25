@@ -19,23 +19,25 @@ just a convenient remote control.
   into white. Other fixtures provide colored, audio-responsive background light.
 - **Color cycle** — cycle through a palette you choose, together or spread
   across the fixtures, with either an immediate cut or a smooth fade between
-  colors. The cycle can run by elapsed time, band peaks, or an estimated
-  kick-drum beat.
-- **Chase** — send a colored accent around the fixtures, forward, backward, or
-  bouncing. The chase can optionally strobe.
+  colors. Or choose its **Chase** behavior to send a colored accent forward,
+  backward, or bouncing. Both behaviors can run by elapsed time, band peaks,
+  or an estimated kick-drum beat.
+- **Concurrent fixtures** — choose how many fixtures participate together.
+  Chase moves that many fixtures as a group; spread color cycles assign colors
+  to groups of that size.
 - **Blackout** — a toggle that blanks the fixtures and then returns to the
   selected lighting mode when switched off.
 - **Audio controls** — set overall brightness and sensitivity, tune band and
   kick response, choose a kick input, and decide whether meter-driven white
-  spotlights may overlay Color cycle or Chase.
+  spotlights may overlay Color cycle effects.
 - **Fixture setup** — add fixtures, disable individual fixtures, and assign
   each fixture a spotlight source. Mixer scribble-strip names are shown where
   available, so you can identify channels by name.
 
-Spotlight assignments matter in Spotlight mode. In Color cycle and Chase they
-are used only when the white spotlight overlay is enabled. Band inputs are
-listed on the Fixtures page; their selection and sensitivity controls live in
-Audio settings.
+Spotlight assignments matter in Spotlight mode. In Color cycle mode they are
+used only when the white spotlight overlay is enabled, including when the
+Chase behavior is selected. Band inputs are listed on the Fixtures page; their
+selection and sensitivity controls live in Audio settings.
 
 ## Bill of materials
 

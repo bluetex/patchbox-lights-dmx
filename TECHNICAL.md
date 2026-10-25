@@ -191,17 +191,19 @@ converts the median interval to BPM. A 0.35 new / 0.65 previous exponential
 blend smooths successive BPM estimates.
 
 The UI can select timer, band peaks, or beat sync as the event source for Color
-cycle and Chase. `trigger_division` can divide those event counts by 1, 2, 4,
-or 8. Beat sync requires a selected kick input. In the live Spotlight pattern,
+cycle and its Chase behavior. `trigger_division` can divide those event counts
+by 1, 2, 4, or 8. Beat sync requires a selected kick input. In the live Spotlight pattern,
 the band's meter-driven rolls and kick pulses are combined according to the
 separate band/kick influence setting.
 
 ## Pattern renderer
 
-Pattern names are persisted as `spotlight`, `color_cycle`, or `chase`.
-Blackout is a separate boolean state; the legacy string `blackout` remains
-accepted for compatibility, but the UI control toggles blackout without
-discarding the selected pattern.
+Top-level pattern names are persisted as `spotlight` and `color_cycle`.
+Color cycle has a `cycle_style` of `cycle` or `chase`; older saved `pattern:
+chase` values migrate to Color cycle with Chase selected. Blackout is a
+separate boolean state; the legacy string `blackout` remains accepted for
+compatibility, but the UI control toggles blackout without discarding the
+selected pattern.
 
 ### Spotlight
 
@@ -217,7 +219,9 @@ spotlights take priority for their assigned fixtures when active.
 The user selects one or more named RGB colors. The timer trigger uses
 `cycle_speed` seconds per color (0.25–15 s). Event triggers advance according
 to `trigger_division`. Unison gives every fixture the same palette position;
-spread offsets the color index by fixture number. `cycle_transition` selects
+spread offsets the color index by fixture group: each group contains
+`concurrent_fixtures` neighboring fixtures, so a value of 2 shows two colors
+at a time across four fixtures. `cycle_transition` selects
 `cut` (immediate change, the default) or `fade`. Fade linearly interpolates
 from the previous palette color to the new color over 0.5 s after each advance;
 timer-driven fades are capped at the configured seconds-per-color interval.
@@ -225,13 +229,15 @@ The initial color and changes to cycle configuration start without an
 unrequested transition. Ambient palette intensity is 50% before master
 brightness.
 
-### Chase
+### Chase behavior
 
 The selected chase color moves among fixture positions. Direction is forward,
-reverse, or bounce; chase speed ranges from 0.1× to 8×. The current renderer
-uses full gain at the active position, 0.18 at adjacent positions, and 0.05
-elsewhere. Optional strobe applies DMX value 24 to the active fixture's strobe
-channel; all others receive zero.
+reverse, or bounce; chase speed ranges from 0.1× to 8×. The active group has
+`concurrent_fixtures` neighboring positions (circularly wrapping at the end of
+the rig), so a value of 2 moves two full-gain fixtures together. Other fixtures
+use the existing tail levels: 0.18 when adjacent to the active group and 0.05
+elsewhere. Optional strobe applies DMX value 24 to every active fixture's
+strobe channel; all others receive zero.
 
 ### Blackout and fixture enable
 
@@ -314,7 +320,7 @@ settings are written to a temporary file and atomically replaced at
 | `sensitivity`, `band_sensitivity`, `kick_sensitivity` | Number, 0.5–2.0 | General sensitivity is runtime-only; band and kick sensitivity persist |
 | `audio_enabled` | Boolean | Yes |
 | `brightness` | Number, 0.0–1.0 | No |
-| `pattern` | `spotlight`, `color_cycle`, `chase`; legacy blackout accepted | Yes |
+| `pattern` | `spotlight`, `color_cycle`; legacy `chase` maps to color-cycle Chase | Yes |
 | `blackout` | Boolean | Yes |
 | `fixture_count` | Integer, 1–73 | Yes |
 | `fixture_enabled` | Boolean list, one per fixture | Yes |
@@ -325,6 +331,8 @@ settings are written to a temporary file and atomically replaced at
 | `cycle_speed` | Seconds per color, 0.25–15 | Yes |
 | `cycle_layout` | `unison` or `spread` | Yes |
 | `cycle_transition` | `cut` or `fade` | Yes |
+| `cycle_style` | `cycle` or `chase` | Yes |
+| `concurrent_fixtures` | Integer, 1 through the configured fixture count | Yes |
 | `behavior_trigger` | `timer`, `band_peaks`, `beat_sync` | Yes |
 | `trigger_division` | 1, 2, 4, or 8 | Yes |
 | `tempo_input` | 0 (off) or Input 1–16 | Yes |
@@ -359,6 +367,8 @@ Spotlight inputs: 1, 2, 3, 4
 Band mode:        automatic (exclude spotlight inputs)
 Audio response:   on
 Pattern:          Spotlight
+Cycle style:      Cycle through colors
+Concurrent:       2 fixtures
 OLA universe:     0
 Web port:         8080
 ```
