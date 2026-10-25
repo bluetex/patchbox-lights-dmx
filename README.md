@@ -57,8 +57,9 @@ DMX plugin active.
 
 ## MR18 / XR18 OSC to OLA lighting app
 
-`lights.py` subscribes to the Midas MR18 or Behringer XR18 `/meters/1` OSC
-stream and sends fixture values to OLA universe 0. OLA owns the FTDI adapter
+`lights.py` subscribes to the Midas MR18 or Behringer XR18 OSC meter streams
+for input channels (`/meters/1`) and Aux/Main outputs (`/meters/5`), then sends
+fixture values to OLA universe 0. OLA owns the FTDI adapter
 and refreshes the DMX stream; `lights.py` does not open `/dev/ttyUSB1`.
 
 Before running it, make sure the FTDI USB DMX plugin is active and output port
@@ -78,8 +79,10 @@ white while audio response is on.
 
 The Settings page lets you select the supported console and its OSC IP address,
 and choose the fixture count. The current seven-channel fixture layout assigns
-sequential DMX start addresses (1, 8, 15, 22, …), supporting up to 73 fixtures
-in one universe. Each fixture can be enabled independently and assigned a
-spotlight input. Settings are saved on the Pi in
+sequential DMX start addresses (d001, d008, d015, d022, …), supporting up to 73
+fixtures in one universe. Each fixture can be enabled independently and assigned
+a spotlight source: Input 1–16, Aux 1–6, Main L, or Main R. A selected source
+creates a white spotlight when its meter crosses the trigger threshold. Settings
+are saved on the Pi in
 `/home/patch/lights/control_settings.json`.
 

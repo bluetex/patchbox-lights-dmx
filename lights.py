@@ -85,6 +85,10 @@ CONTROL_PANEL_HOST = "0.0.0.0"
 CONTROL_PANEL_PORT = 8080
 CONTROL_SETTINGS_PATH = "/home/patch/lights/control_settings.json"
 INPUT_CHANNEL_COUNT = 16
+OUTPUT_SPOTLIGHT_SOURCE_FIRST = INPUT_CHANNEL_COUNT + 1
+OUTPUT_SPOTLIGHT_SOURCE_LAST = INPUT_CHANNEL_COUNT + 8
+SPOTLIGHT_SOURCE_COUNT = OUTPUT_SPOTLIGHT_SOURCE_LAST
+OUTPUT_METER_STREAM = "/meters/5"
 AVAILABLE_PATTERNS = {"auto", "ambient", "chase_forward", "chase_reverse", "unison", "mixed", "color_cycle", "blackout"}
 DEFAULT_CONTROLS = {
     "sensitivity": 1.0,
@@ -166,7 +170,7 @@ def load_control_settings():
                         controls["fixture_enabled"][index] = value
             if isinstance(saved_spotlights, list):
                 for index, value in enumerate(saved_spotlights[:fixture_count]):
-                    if type(value) is int and 0 <= value <= INPUT_CHANNEL_COUNT:
+                    if type(value) is int and 0 <= value <= SPOTLIGHT_SOURCE_COUNT:
                         controls["spotlight_inputs"][index] = value
             if 0.5 <= sensitivity <= 2.0:
                 controls["sensitivity"] = sensitivity
@@ -290,10 +294,10 @@ class OlaDmxOutput:
             print("OLA output thread did not stop within 2 seconds.", flush=True)
 
 
-def parse_meter_values(data):
-    """Decode an XR18 /meters/1 OSC packet containing one binary blob."""
+def parse_meter_values(data, meter_stream=METER_STREAM):
+    """Decode a selected XR18 OSC meter stream containing one binary blob."""
     address_end = data.find(b"\x00")
-    if address_end < 0 or data[:address_end] != METER_STREAM.encode("ascii"):
+    if address_end < 0 or data[:address_end] != meter_stream.encode("ascii"):
         return None
 
     tags_offset = (address_end + 4) & ~3
@@ -312,7 +316,8 @@ def parse_meter_values(data):
     blob = data[blob_start:blob_end]
     channel_count = struct.unpack("<I", blob[:4])[0]
     values_end = 4 + channel_count * 2
-    if channel_count < 16 or values_end > len(blob):
+    minimum_channels = 16 if meter_stream == METER_STREAM else 8
+    if channel_count < minimum_channels or values_end > len(blob):
         return None
     return struct.unpack(f"<{channel_count}h", blob[4:values_end])
 
@@ -341,12 +346,12 @@ class LightingController:
         self.dmx_buffer = bytearray(self.fixture_addresses[-1] + FIXTURE_CHANNELS)
         self.source_changed = threading.Event()
 
-        self.voice_peak_levels = [0.0] * INPUT_CHANNEL_COUNT
-        self.voice_peak_hold_until = [0.0] * INPUT_CHANNEL_COUNT
-        self.voice_peak_active = [False] * INPUT_CHANNEL_COUNT
-        self.voice_captured_peaks = [0.0] * INPUT_CHANNEL_COUNT
-        self.white_levels = [0.0] * INPUT_CHANNEL_COUNT
-        self.smoothed_voice = [0.0] * INPUT_CHANNEL_COUNT
+        self.voice_peak_levels = [0.0] * SPOTLIGHT_SOURCE_COUNT
+        self.voice_peak_hold_until = [0.0] * SPOTLIGHT_SOURCE_COUNT
+        self.voice_peak_active = [False] * SPOTLIGHT_SOURCE_COUNT
+        self.voice_captured_peaks = [0.0] * SPOTLIGHT_SOURCE_COUNT
+        self.white_levels = [0.0] * SPOTLIGHT_SOURCE_COUNT
+        self.smoothed_voice = [0.0] * SPOTLIGHT_SOURCE_COUNT
         self.smoothed_band = 0.0
         self.band_peak_level = 0.0
         self.band_swell_level = 0.0
@@ -401,11 +406,11 @@ class LightingController:
         self.dmx_buffer[address + 6] = 0  # Effect speed unused
 
     def clear_audio_response(self):
-        self.voice_peak_levels[:] = [0.0] * INPUT_CHANNEL_COUNT
-        self.voice_peak_hold_until[:] = [0.0] * INPUT_CHANNEL_COUNT
-        self.voice_peak_active[:] = [False] * INPUT_CHANNEL_COUNT
-        self.voice_captured_peaks[:] = [0.0] * INPUT_CHANNEL_COUNT
-        self.white_levels[:] = [0.0] * INPUT_CHANNEL_COUNT
+        self.voice_peak_levels[:] = [0.0] * SPOTLIGHT_SOURCE_COUNT
+        self.voice_peak_hold_until[:] = [0.0] * SPOTLIGHT_SOURCE_COUNT
+        self.voice_peak_active[:] = [False] * SPOTLIGHT_SOURCE_COUNT
+        self.voice_captured_peaks[:] = [0.0] * SPOTLIGHT_SOURCE_COUNT
+        self.white_levels[:] = [0.0] * SPOTLIGHT_SOURCE_COUNT
         self.band_peak_level = 0.0
         self.band_swell_level = 0.0
         self.band_peak_hold_until = 0.0
@@ -633,6 +638,38 @@ class LightingController:
             self.band_peak_candidate = 0.0
             self.band_peak_valley = 1.0
 
+    def process_output_meter(self, values, now):
+        """Use Aux 1-6 and Main L/R meters as selectable spotlight triggers."""
+        sensitivity_db = 12.0 * math.log2(self.controls["sensitivity"])
+        # /meters/5 starts with Aux 1-6, then Main L and Main R.
+        for offset, meter_value in enumerate(values[:8]):
+            index = INPUT_CHANNEL_COUNT + offset
+            adjusted_meter = int(meter_value + sensitivity_db * 256.0)
+            level = clean_vu(adjusted_meter)
+            level_db = meter_db(adjusted_meter)
+            current = self.smoothed_voice[index]
+            self.smoothed_voice[index] = level if level > current else max(0.0, current - 0.08)
+            if not self.controls["audio_enabled"]:
+                self.voice_peak_active[index] = False
+                self.voice_captured_peaks[index] = 0.0
+                continue
+            if self.voice_peak_levels[index] <= 0.01:
+                self.voice_peak_active[index] = False
+                self.voice_captured_peaks[index] = 0.0
+            if level_db >= VOCAL_THRESHOLD_DB:
+                if not self.voice_peak_active[index]:
+                    self.voice_peak_active[index] = True
+                    self.voice_captured_peaks[index] = level
+                    self.voice_peak_levels[index] = max(self.voice_peak_levels[index], level)
+                    self.voice_peak_hold_until[index] = now + VOCAL_PEAK_HOLD_SECONDS
+                elif level >= self.voice_captured_peaks[index] + VOCAL_PEAK_RETRIGGER_DELTA:
+                    self.voice_captured_peaks[index] = level
+                    self.voice_peak_levels[index] = max(self.voice_peak_levels[index], level)
+                    self.voice_peak_hold_until[index] = now + VOCAL_PEAK_HOLD_SECONDS
+            elif level_db <= VOCAL_RELEASE_DB:
+                self.voice_peak_active[index] = False
+                self.voice_captured_peaks[index] = 0.0
+
     def update(self, now):
         with self.controls_lock:
             self._update_locked(now)
@@ -650,7 +687,7 @@ class LightingController:
                 chase_rate = max(0.25, chase_rate)
             self.band_chase_phase += elapsed * chase_rate
 
-        for index in range(INPUT_CHANNEL_COUNT):
+        for index in range(SPOTLIGHT_SOURCE_COUNT):
             if now >= self.voice_peak_hold_until[index]:
                 self.voice_peak_levels[index] = max(
                     0.0, self.voice_peak_levels[index] - PEAK_DECAY_PER_SECOND * elapsed
@@ -683,8 +720,8 @@ class LightingController:
 
         if self.last_valid_meter_time is not None and now - self.last_valid_meter_time > METER_STALE_SECONDS:
             self.smoothed_band = max(0.0, self.smoothed_band - PEAK_DECAY_PER_SECOND * elapsed)
-            self.voice_peak_active[:] = [False] * INPUT_CHANNEL_COUNT
-            self.voice_captured_peaks[:] = [0.0] * INPUT_CHANNEL_COUNT
+            self.voice_peak_active[:] = [False] * SPOTLIGHT_SOURCE_COUNT
+            self.voice_captured_peaks[:] = [0.0] * SPOTLIGHT_SOURCE_COUNT
             self.band_color_active = False
             self.band_captured_peak = 0.0
 
@@ -700,7 +737,8 @@ class LightingController:
             self.band_captured_peak = self.smoothed_band
             self.band_peak_hold_until = now + VOCAL_PEAK_HOLD_SECONDS
 
-        received_meter = None
+        received_input_meter = None
+        received_output_meter = None
         while True:
             try:
                 data, sender = self.socket.recvfrom(4096)
@@ -712,14 +750,21 @@ class LightingController:
             self.udp_packets_received += 1
             if sender[0] != self.controls["osc_ip"]:
                 continue
-            packet_values = parse_meter_values(data)
-            if packet_values is not None:
-                received_meter = packet_values
+            input_values = parse_meter_values(data, METER_STREAM)
+            output_values = parse_meter_values(data, OUTPUT_METER_STREAM)
+            if input_values is not None:
+                received_input_meter = input_values
+                self.valid_meter_packets_received += 1
+            elif output_values is not None:
+                received_output_meter = output_values
                 self.valid_meter_packets_received += 1
 
-        if received_meter is not None:
+        if received_input_meter is not None or received_output_meter is not None:
             self.last_valid_meter_time = now
-            self.process_meter(received_meter, now)
+            if received_input_meter is not None:
+                self.process_meter(received_input_meter, now)
+            if received_output_meter is not None:
+                self.process_output_meter(received_output_meter, now)
 
         if not self.band_color_active and self.band_peak_level <= 0.0:
             self.band_color_rgb = BASELINE_AMBIENT_COLOR
@@ -789,9 +834,10 @@ def meter_renewer(controller, stop_event):
     while not stop_event.is_set():
         try:
             source_ip = controller.controls["osc_ip"]
-            controller.socket.sendto(meters_packet, (source_ip, XR18_PORT))
+            for packet in meters_packets:
+                controller.socket.sendto(packet, (source_ip, XR18_PORT))
             controller.last_meter_subscription = time.monotonic()
-            controller.meter_subscription_requests += 1
+            controller.meter_subscription_requests += len(meters_packets)
             controller.last_network_error = None
         except OSError as exc:
             controller.last_network_error = f"{type(exc).__name__}: {exc}"
@@ -804,7 +850,7 @@ PANEL_HTML = r'''<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <meta name="theme-color" content="#10131b"><title>Patchbox Lights</title>
 <style>
-:root{color-scheme:dark;font:17px system-ui,-apple-system,sans-serif;background:#10131b;color:#f3f5fa}*{box-sizing:border-box}body{margin:0 auto;max-width:760px;padding:22px 18px 40px}h1{font-size:27px;margin:4px 0 5px}p.sub{margin:0 0 22px;color:#aeb6c7}.card{background:#1b202c;border:1px solid #30384a;border-radius:18px;padding:18px;margin:14px 0}.label{display:flex;justify-content:space-between;gap:14px;font-weight:650;margin:0 0 12px}.value{color:#91caff;font-variant-numeric:tabular-nums}input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:64px;margin:0;background:transparent;touch-action:pan-y;cursor:pointer;accent-color:#63aaff}input[type=range]::-webkit-slider-runnable-track{height:12px;background:#3b465c;border-radius:12px}input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:34px;height:34px;margin-top:-11px;border:3px solid #f3f5fa;border-radius:50%;background:#63aaff;box-shadow:0 2px 8px #0008}input[type=range]::-moz-range-track{height:12px;background:#3b465c;border-radius:12px}input[type=range]::-moz-range-thumb{width:28px;height:28px;border:3px solid #f3f5fa;border-radius:50%;background:#63aaff;box-shadow:0 2px 8px #0008}input[type=range]:focus-visible{outline:2px solid #91caff;outline-offset:2px}input[type=range]:disabled{opacity:.4;cursor:not-allowed}select,button{font:inherit;color:inherit;background:#252d3d;border:1px solid #46516a;border-radius:12px;padding:13px 14px}select{width:100%;min-height:52px}button{min-height:54px;font-weight:700;cursor:pointer}.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.blackout{background:#8f2835;border-color:#bb5360}.meter{display:grid;grid-template-columns:minmax(115px,150px) 1fr 48px;align-items:center;gap:10px;margin:12px 0}.meter-name{font-size:14px;line-height:1.15}.meter-name strong,.meter-name small{display:block}.meter-name small{margin-top:3px;color:#aeb6c7;font-size:12px}.track{height:13px;background:#303749;border-radius:10px;overflow:hidden}.fill{height:100%;width:0;background:linear-gradient(90deg,#55c6bd,#ffd267,#ff6581);transition:width .15s}.small{font-size:14px;color:#aeb6c7;line-height:1.5}.status{display:flex;justify-content:space-between;gap:12px;align-items:center}.audio-switch{display:flex;align-items:center;gap:12px;min-height:44px;font-weight:650}.audio-switch input{width:25px;height:25px;accent-color:#63aaff}.dot{width:9px;height:9px;display:inline-block;border-radius:50%;background:#f0ba55;margin-right:8px}.dot.ok{background:#49d49a}.page-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.settings-link{display:inline-flex;align-items:center;min-height:44px;margin:0;color:#91caff;font-weight:650;text-decoration:none;white-space:nowrap}.cycle-settings{margin-top:14px}.cycle-settings[hidden]{display:none}.cycle-intro{margin:0 0 10px}.color-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.color-choice{display:flex;align-items:center;gap:7px;min-height:48px;padding:7px 9px;background:#252d3d;border:1px solid #46516a;border-radius:10px;font-size:14px}.color-choice input{width:20px;height:20px;accent-color:#63aaff}.color-dot{width:15px;height:15px;border-radius:50%;box-shadow:0 0 0 1px #fff5}.cycle-speed{margin-top:14px}.toast{min-height:21px;color:#9bc9ff;font-size:14px;margin-top:10px}@media(max-width:500px){body{padding:16px 12px}.card{padding:15px}.meter{grid-template-columns:minmax(90px,110px) 1fr 42px;gap:7px}.color-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+:root{color-scheme:dark;font:17px system-ui,-apple-system,sans-serif;background:#10131b;color:#f3f5fa}*{box-sizing:border-box}body{margin:0 auto;max-width:760px;padding:22px 18px 40px}h1{font-size:27px;margin:4px 0 5px}p.sub{margin:0 0 22px;color:#aeb6c7}.card{background:#1b202c;border:1px solid #30384a;border-radius:18px;padding:18px;margin:14px 0}.label{display:flex;justify-content:space-between;gap:14px;font-weight:650;margin:0 0 12px}.value{color:#91caff;font-variant-numeric:tabular-nums}input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:64px;margin:0;background:transparent;touch-action:pan-y;cursor:pointer;accent-color:#63aaff}input[type=range]::-webkit-slider-runnable-track{height:12px;background:#3b465c;border-radius:12px}input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:34px;height:34px;margin-top:-11px;border:3px solid #f3f5fa;border-radius:50%;background:#63aaff;box-shadow:0 2px 8px #0008}input[type=range]::-moz-range-track{height:12px;background:#3b465c;border-radius:12px}input[type=range]::-moz-range-thumb{width:28px;height:28px;border:3px solid #f3f5fa;border-radius:50%;background:#63aaff;box-shadow:0 2px 8px #0008}input[type=range]:focus-visible{outline:2px solid #91caff;outline-offset:2px}input[type=range]:disabled{opacity:.4;cursor:not-allowed}select,button{font:inherit;color:inherit;background:#252d3d;border:1px solid #46516a;border-radius:12px;padding:13px 14px}select{width:100%;min-height:52px}button{min-height:54px;font-weight:700;cursor:pointer}.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.blackout{background:#8f2835;border-color:#bb5360}.meter{display:grid;grid-template-columns:minmax(115px,150px) 1fr 48px;align-items:center;gap:10px;margin:12px 0}.meter-name{font-size:14px;line-height:1.15}.meter-name strong,.meter-name small{display:block}.meter-name small{margin-top:3px;color:#aeb6c7;font-size:12px}.track{height:13px;background:#303749;border-radius:10px;overflow:hidden}.fill{height:100%;width:0;background:linear-gradient(90deg,#55c6bd,#ffd267,#ff6581);transition:width .15s}.small{font-size:14px;color:#aeb6c7;line-height:1.5}.status{display:flex;justify-content:space-between;gap:12px;align-items:center}.audio-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px}.audio-toggle{position:relative;display:flex;align-items:center;cursor:pointer;padding:4px}.audio-toggle input{position:absolute;opacity:0;width:1px;height:1px}.switch-track{position:relative;display:block;width:46px;height:26px;border-radius:16px;background:#46516a;transition:background .15s}.switch-track:after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#f3f5fa;transition:transform .15s}.audio-toggle input:checked+.switch-track{background:#3d9a72}.audio-toggle input:checked+.switch-track:after{transform:translateX(20px)}.audio-toggle input:focus-visible+.switch-track{outline:2px solid #91caff;outline-offset:3px}.dot{width:9px;height:9px;display:inline-block;border-radius:50%;background:#f0ba55;margin-right:8px}.dot.ok{background:#49d49a}.page-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.settings-link{display:inline-flex;align-items:center;min-height:44px;margin:0;color:#91caff;font-weight:650;text-decoration:none;white-space:nowrap}.cycle-settings{margin-top:14px}.cycle-settings[hidden]{display:none}.cycle-intro{margin:0 0 10px}.color-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.color-choice{display:flex;align-items:center;gap:7px;min-height:48px;padding:7px 9px;background:#252d3d;border:1px solid #46516a;border-radius:10px;font-size:14px}.color-choice input{width:20px;height:20px;accent-color:#63aaff}.color-dot{width:15px;height:15px;border-radius:50%;box-shadow:0 0 0 1px #fff5}.cycle-speed{margin-top:14px}.toast{min-height:21px;color:#9bc9ff;font-size:14px;margin-top:10px}@media(max-width:500px){body{padding:16px 12px}.card{padding:15px}.meter{grid-template-columns:minmax(90px,110px) 1fr 42px;gap:7px}.color-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style></head><body>
 <header class="page-header"><h1>Patchbox Lights</h1><a class="settings-link" href="/settings">Settings →</a></header>
 <p class="sub">Live controls · same private network</p>
@@ -814,7 +860,7 @@ PANEL_HTML = r'''<!doctype html>
 <div class="cycle-settings" id="cycleSettings" hidden><p class="small cycle-intro">Select colors to include; they cycle in the order shown. Meter peaks still flash their assigned fixture white.</p><div class="color-grid" id="cycleColors"><label class="color-choice"><input type="checkbox" value="Purple"><i class="color-dot" style="background:#a030ff"></i>Purple</label><label class="color-choice"><input type="checkbox" value="Green"><i class="color-dot" style="background:#00ff3c"></i>Green</label><label class="color-choice"><input type="checkbox" value="Teal"><i class="color-dot" style="background:#00d2be"></i>Teal</label><label class="color-choice"><input type="checkbox" value="Magenta"><i class="color-dot" style="background:#ff00b4"></i>Magenta</label><label class="color-choice"><input type="checkbox" value="Blue"><i class="color-dot" style="background:#1450ff"></i>Blue</label><label class="color-choice"><input type="checkbox" value="Cyan"><i class="color-dot" style="background:#00dcff"></i>Cyan</label><label class="color-choice"><input type="checkbox" value="Amber"><i class="color-dot" style="background:#ff9600"></i>Amber</label><label class="color-choice"><input type="checkbox" value="Red"><i class="color-dot" style="background:#ff1818"></i>Red</label></div><div class="cycle-speed"><div class="label"><span>Seconds per color</span><span class="value" id="cycleSpeedValue">1.50 s</span></div><input id="cycleSpeed" type="range" min="0.25" max="15" step="0.25" value="1.5" aria-label="Seconds per color"></div></div>
 <div class="toast" id="toast"></div></section>
 <section class="card"><div class="label"><span>Brightness</span><span class="value" id="brightnessValue">100%</span></div><input id="brightness" type="range" min="0" max="100" value="100" aria-label="Brightness"></section>
-<section class="card"><div class="status"><strong>Audio sensitivity</strong><span class="small" id="audioState">On</span></div><label class="audio-switch"><input id="audioEnabled" type="checkbox" checked><span>Audio response</span></label><div class="label"><span>Sensitivity</span><span class="value" id="sensitivityValue">1.00×</span></div><input id="sensitivity" type="range" min="50" max="200" value="100" aria-label="Audio sensitivity"><div class="small">Raise it to react to quieter signals; turn Audio response off to ignore meter changes.</div></section>
+<section class="card"><div class="audio-heading"><strong>Audio sensitivity</strong><label class="audio-toggle" title="Toggle audio response"><input id="audioEnabled" type="checkbox" checked aria-label="Audio response"><span class="switch-track" aria-hidden="true"></span></label></div><div class="label"><span>Sensitivity</span><span class="value" id="sensitivityValue">1.00×</span></div><input id="sensitivity" type="range" min="50" max="200" value="100" aria-label="Audio sensitivity"><div class="small">Raise it to react to quieter signals; turn Audio response off to ignore meter changes.</div></section>
 <section class="card"><div class="status"><strong>Meter input</strong><span class="small" id="meterState"><i class="dot"></i>Connecting</span></div><div id="fixtureMeters"></div><div class="meter"><span>Band</span><div class="track"><div class="fill" id="band"></div></div><span id="bandt">0%</span></div><div class="small" id="detail">Waiting for status…</div></section>
 <div class="row"><button id="auto">Return to Auto</button><button class="blackout" id="blackout">Blackout</button></div>
 <script>
@@ -823,13 +869,13 @@ async function control(values){try{const r=await fetch('/api/control',{method:'P
 function delayed(value){clearTimeout(timer);timer=setTimeout(()=>control(value),110)}
 $('brightness').addEventListener('input',e=>{$('brightnessValue').textContent=e.target.value+'%';delayed({brightness:Number(e.target.value)/100})});
 $('sensitivity').addEventListener('input',e=>{$('sensitivityValue').textContent=(Number(e.target.value)/100).toFixed(2)+'×';delayed({sensitivity:Number(e.target.value)/100})});
-$('audioEnabled').addEventListener('change',e=>{const enabled=e.target.checked;$('audioState').textContent=enabled?'On':'Off';$('sensitivity').disabled=!enabled;control({audio_enabled:enabled})});
+$('audioEnabled').addEventListener('change',e=>{const enabled=e.target.checked;$('sensitivity').disabled=!enabled;control({audio_enabled:enabled})});
 $('pattern').addEventListener('change',e=>{$('cycleSettings').hidden=e.target.value!=='color_cycle';control({pattern:e.target.value})});$('auto').onclick=()=>{$('pattern').value='auto';$('cycleSettings').hidden=true;control({pattern:'auto'})};$('blackout').onclick=()=>{$('pattern').value='blackout';$('cycleSettings').hidden=true;control({pattern:'blackout'})};
 document.querySelectorAll('#cycleColors input').forEach(input=>input.onchange=()=>{const colors=Array.from(document.querySelectorAll('#cycleColors input:checked')).map(item=>item.value);if(!colors.length){input.checked=true;$('toast').textContent='Select at least one color';return}control({cycle_colors:colors})});
 function setCycleSpeed(value,save){$('cycleSpeed').value=value;$('cycleSpeedValue').textContent=Number(value).toFixed(2)+' s';if(save)delayed({cycle_speed:Number(value)})}
 $('cycleSpeed').addEventListener('input',e=>setCycleSpeed(e.target.value,true));
 function renderFixtureMeters(addresses){const root=$('fixtureMeters'),count=addresses.length;if(root.dataset.count===String(count))return;root.dataset.count=count;root.innerHTML='';addresses.forEach((address,index)=>{const row=document.createElement('div');row.className='meter';row.innerHTML=`<span class="meter-name"><strong>Fixture ${index+1}</strong><small id="source${index}"></small></span><div class="track"><div class="fill" id="v${index}"></div></div><span id="v${index}t">0%</span>`;root.appendChild(row)})}
-async function refresh(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();const addresses=s.fixture_addresses||[];renderFixtureMeters(addresses);$('pattern').value=s.controls.pattern;$('patternName').textContent=names[s.controls.pattern]||s.controls.pattern;$('cycleSettings').hidden=s.controls.pattern!=='color_cycle';$('audioEnabled').checked=s.controls.audio_enabled;$('audioState').textContent=s.controls.audio_enabled?'On':'Off';$('sensitivity').disabled=!s.controls.audio_enabled;$('cycleSpeed').value=s.controls.cycle_speed;$('cycleSpeedValue').textContent=Number(s.controls.cycle_speed).toFixed(2)+' s';document.querySelectorAll('#cycleColors input').forEach(input=>input.checked=s.controls.cycle_colors.includes(input.value));$('brightness').value=Math.round(s.controls.brightness*100);$('brightnessValue').textContent=Math.round(s.controls.brightness*100)+'%';$('sensitivity').value=Math.round(s.controls.sensitivity*100);$('sensitivityValue').textContent=s.controls.sensitivity.toFixed(2)+'×';for(let i=0;i<addresses.length;i++){const input=s.controls.spotlight_inputs[i],level=input?Math.round(s.vocal[input-1]*100):0;$('source'+i).textContent=`DMX ${addresses[i]} · ${input?'Input '+input:'No spotlight'}`;$('v'+i).style.width=level+'%';$('v'+i+'t').textContent=level+'%'}const band=Math.round(s.band*100);$('band').style.width=band+'%';$('bandt').textContent=band+'%';const live=s.meter_age!==null&&s.meter_age<1.5;$('meterState').innerHTML='<i class="dot '+(live?'ok':'')+'"></i>'+(live?'Live':'No meter data');$('detail').textContent=`${addresses.length} fixtures · DMX updates ${s.dmx_frames} · last error: ${s.error||'none'}`}catch(e){$('meterState').innerHTML='<i class="dot"></i>Panel disconnected'}}
+async function refresh(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();const addresses=s.fixture_addresses||[];renderFixtureMeters(addresses);$('pattern').value=s.controls.pattern;$('patternName').textContent=names[s.controls.pattern]||s.controls.pattern;$('cycleSettings').hidden=s.controls.pattern!=='color_cycle';$('audioEnabled').checked=s.controls.audio_enabled;$('sensitivity').disabled=!s.controls.audio_enabled;$('cycleSpeed').value=s.controls.cycle_speed;$('cycleSpeedValue').textContent=Number(s.controls.cycle_speed).toFixed(2)+' s';document.querySelectorAll('#cycleColors input').forEach(input=>input.checked=s.controls.cycle_colors.includes(input.value));$('brightness').value=Math.round(s.controls.brightness*100);$('brightnessValue').textContent=Math.round(s.controls.brightness*100)+'%';$('sensitivity').value=Math.round(s.controls.sensitivity*100);$('sensitivityValue').textContent=s.controls.sensitivity.toFixed(2)+'×';for(let i=0;i<addresses.length;i++){const input=s.controls.spotlight_inputs[i],level=input?Math.round(s.vocal[input-1]*100):0,sourceName=!input?'No spotlight':input<=16?`Input ${input}`:input<=22?`Aux ${input-16}`:`Main ${input===23?'L':'R'}`;$('source'+i).textContent=`DMX d${String(addresses[i]).padStart(3,'0')} · ${sourceName}`;$('v'+i).style.width=level+'%';$('v'+i+'t').textContent=level+'%'}const band=Math.round(s.band*100);$('band').style.width=band+'%';$('bandt').textContent=band+'%';const live=s.meter_age!==null&&s.meter_age<1.5;$('meterState').innerHTML='<i class="dot '+(live?'ok':'')+'"></i>'+(live?'Live':'No meter data');$('detail').textContent=`${addresses.length} fixtures · DMX updates ${s.dmx_frames} · last error: ${s.error||'none'}`}catch(e){$('meterState').innerHTML='<i class="dot"></i>Panel disconnected'}}
 refresh();setInterval(refresh,1000);
 </script></body></html>'''
 
@@ -841,7 +887,7 @@ SETTINGS_HTML = r'''<!doctype html>
 </style></head><body>
 <a href="/">← Live controls</a><h1>Settings</h1><p class="sub">Configure the console source and the DMX fixtures.</p>
 <section class="card"><h2>OSC audio source</h2><p class="hint">Only Behringer XR18 and Midas MR18 meter sources are supported.</p><div class="setting-row"><label><div class="source-label">Console model</div><select id="oscModel"><option>Behringer XR18</option><option>Midas MR18</option></select></label><label><div class="source-label">Console IP address</div><input id="oscIp" type="text" inputmode="decimal" autocomplete="off" placeholder="192.168.0.18"></label></div><p class="hint">The controller subscribes to the selected console’s OSC meter stream on UDP port 10024.</p><button id="saveSource">Save audio source</button></section>
-<section class="card"><h2>Fixtures</h2><label><div class="source-label">Number of fixtures</div><select id="fixtureCount"></select></label><p class="hint">Fixtures use the current seven-channel RGB layout and get sequential DMX start addresses: 1, 8, 15, 22, and so on. Up to 73 fit in one DMX universe.</p><div id="fixtures"></div></section>
+<section class="card"><h2>Fixtures</h2><label><div class="source-label">Number of fixtures</div><select id="fixtureCount"></select></label><p class="hint">Fixtures use the current seven-channel RGB layout and get sequential DMX start addresses: d001, d008, d015, d022, and so on. Up to 73 fit in one DMX universe.</p><p class="hint">A spotlight source creates a white spotlight when its meter exceeds the trigger threshold.</p><div id="fixtures"></div></section>
 <section class="card"><h2>Band assignment</h2><label class="band-mode"><input id="bandAuto" type="checkbox"><span>Automatically use inputs not assigned as spotlights</span></label><div id="bandChannels" class="channel-grid"></div><p class="hint">When automatic is on, spotlight inputs are excluded from the band group. Turn it off to choose the band inputs yourself.</p></section>
 <p class="hint">Turning a fixture off blacks it out. Set Spotlight source to Off to keep its ambient color but remove its white meter response. Settings are saved on the Pi and survive app restarts.</p><div class="toast" id="toast">Loading settings…</div>
 <script>
@@ -850,7 +896,7 @@ for(let count=1;count<=MAX_FIXTURES;count++)$('fixtureCount').add(new Option(Str
 function automaticBandInputs(){const spotlight=new Set(sources.filter(value=>value>0));return Array.from({length:16},(_,i)=>i+1).filter(input=>!spotlight.has(input))}
 async function post(values,message){try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent=message}catch(e){$('toast').textContent='Could not save settings: '+e.message}}
 function saveFixtures(){return post({fixture_count:enabled.length,fixture_enabled:enabled,spotlight_inputs:sources,band_mode:bandMode,band_inputs:bandInputs},'Fixture settings saved on the Pi')}
-function renderFixtures(){const root=$('fixtures');root.innerHTML='';const sourceOptions='<option value="0">Off</option>'+Array.from({length:16},(_,n)=>`<option value="${n+1}">Input ${n+1}</option>`).join('');for(let i=0;i<enabled.length;i++){const address=1+i*7,row=document.createElement('div');row.className='fixture';row.innerHTML=`<label class="enable"><input type="checkbox" data-enable="${i}" ${enabled[i]?'checked':''}><span><span class="fixture-title">Fixture ${i+1}</span><span class="fixture-address">DMX start ${address}</span></span></label><label><div class="source-label">Spotlight source</div><select data-source="${i}">${sourceOptions}</select></label>`;root.appendChild(row);row.querySelector('[data-source]').value=sources[i]}root.querySelectorAll('[data-enable]').forEach(el=>el.onchange=()=>{enabled[Number(el.dataset.enable)]=el.checked;saveFixtures()});root.querySelectorAll('[data-source]').forEach(el=>el.onchange=()=>{sources[Number(el.dataset.source)]=Number(el.value);if(bandMode==='auto')renderBandInputs();saveFixtures()})}
+function renderFixtures(){const root=$('fixtures');root.innerHTML='';const sourceOptions='<option value="0">Off</option><optgroup label="Inputs">'+Array.from({length:16},(_,n)=>`<option value="${n+1}">Input ${n+1}</option>`).join('')+'</optgroup><optgroup label="Aux outputs">'+Array.from({length:6},(_,n)=>`<option value="${17+n}">Aux ${n+1}</option>`).join('')+'</optgroup><optgroup label="Main outputs"><option value="23">Main L</option><option value="24">Main R</option></optgroup>';for(let i=0;i<enabled.length;i++){const address=1+i*7,row=document.createElement('div');row.className='fixture';row.innerHTML=`<label class="enable"><input type="checkbox" data-enable="${i}" ${enabled[i]?'checked':''}><span><span class="fixture-title">Fixture ${i+1}</span><span class="fixture-address">DMX d${String(address).padStart(3,'0')}</span></span></label><label><div class="source-label">Spotlight source</div><select data-source="${i}">${sourceOptions}</select></label>`;root.appendChild(row);row.querySelector('[data-source]').value=sources[i]}root.querySelectorAll('[data-enable]').forEach(el=>el.onchange=()=>{enabled[Number(el.dataset.enable)]=el.checked;saveFixtures()});root.querySelectorAll('[data-source]').forEach(el=>el.onchange=()=>{sources[Number(el.dataset.source)]=Number(el.value);if(bandMode==='auto')renderBandInputs();saveFixtures()})}
 function renderBandInputs(){const automatic=bandMode==='auto',selected=automatic?automaticBandInputs():bandInputs,root=$('bandChannels');root.innerHTML='';$('bandAuto').checked=automatic;for(let input=1;input<=16;input++){const label=document.createElement('label');label.className='channel';label.innerHTML=`<input type="checkbox" value="${input}" ${selected.includes(input)?'checked':''} ${automatic?'disabled':''}><span>Input ${input}</span>`;label.querySelector('input').onchange=()=>{bandInputs=Array.from(root.querySelectorAll('input:checked')).map(item=>Number(item.value));bandMode='custom';renderBandInputs();saveFixtures()};root.appendChild(label)}}
 $('fixtureCount').onchange=()=>{const count=Number($('fixtureCount').value);enabled=Array.from({length:count},(_,i)=>enabled[i]??true);sources=Array.from({length:count},(_,i)=>sources[i]??0);renderFixtures();renderBandInputs();saveFixtures()};
 $('bandAuto').onchange=()=>{if($('bandAuto').checked)bandMode='auto';else{if(bandMode==='auto'&&bandInputs.length===0)bandInputs=automaticBandInputs();bandMode='custom'}renderBandInputs();saveFixtures()};
@@ -947,8 +993,8 @@ def start_control_panel(controller):
                 updated["fixture_enabled"] = value
             if "spotlight_inputs" in data:
                 value = data["spotlight_inputs"]
-                if not isinstance(value, list) or len(value) != count or any(type(item) is not int or not 0 <= item <= INPUT_CHANNEL_COUNT for item in value):
-                    return jsonify(error=f"spotlight_inputs must contain {count} values from 0 to 16"), 400
+                if not isinstance(value, list) or len(value) != count or any(type(item) is not int or not 0 <= item <= SPOTLIGHT_SOURCE_COUNT for item in value):
+                    return jsonify(error=f"spotlight_inputs must contain {count} source values from 0 to {SPOTLIGHT_SOURCE_COUNT}"), 400
                 updated["spotlight_inputs"] = value
             if "band_mode" in data:
                 value = data["band_mode"]
@@ -1019,7 +1065,7 @@ def start_control_panel(controller):
             if updated["osc_ip"] != previous["osc_ip"] or updated["osc_model"] != previous["osc_model"]:
                 controller.last_valid_meter_time = None
                 controller.last_network_error = None
-                controller.smoothed_voice[:] = [0.0] * INPUT_CHANNEL_COUNT
+                controller.smoothed_voice[:] = [0.0] * SPOTLIGHT_SOURCE_COUNT
                 controller.smoothed_band = 0.0
                 controller.clear_audio_response()
             controller.controls = updated
@@ -1036,7 +1082,10 @@ def start_control_panel(controller):
     return thread
 
 
-meters_packet = b"/meters\x00,s\x00\x00/meters/1\x00\x00\x00"
+meters_packets = (
+    b"/meters\x00,s\x00\x00/meters/1\x00\x00\x00",
+    b"/meters\x00,s\x00\x00/meters/5\x00\x00\x00",
+)
 
 
 def main():
