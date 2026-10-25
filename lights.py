@@ -108,6 +108,7 @@ DEFAULT_CONTROLS = {
     "behavior_trigger": "timer",
     "trigger_division": 1,
     "tempo_input": 0,
+    "kick_influence": 0.0,
     "spotlight_overlay": True,
     "chase_direction": "forward",
     "chase_speed": 1.0,
@@ -300,6 +301,9 @@ def load_control_settings():
             tempo_input = saved.get("tempo_input", controls["tempo_input"])
             if type(tempo_input) is int and 0 <= tempo_input <= INPUT_CHANNEL_COUNT:
                 controls["tempo_input"] = tempo_input
+            kick_influence = float(saved.get("kick_influence", controls["kick_influence"]))
+            if 0.0 <= kick_influence <= 1.0:
+                controls["kick_influence"] = kick_influence
             spotlight_overlay = saved.get("spotlight_overlay", controls["spotlight_overlay"])
             if type(spotlight_overlay) is bool:
                 controls["spotlight_overlay"] = spotlight_overlay
@@ -586,15 +590,18 @@ class LightingController:
         controls = self.controls
         pattern = controls["pattern"]
         fixture_count = len(self.fixture_addresses)
-        ambient_level = (
-            0.55
-            if pattern in ("color_cycle", "chase")
-            else self.band_swell_level
+        band_ambient_level = (
+            self.band_swell_level
             if controls["audio_enabled"] and (self.band_color_active or self.band_peak_level > 0.01)
             else MIN_BAND_BRIGHTNESS
         )
-        if pattern == "spotlight" and controls["audio_enabled"] and controls["behavior_trigger"] == "beat_sync":
-            ambient_level = max(ambient_level, MIN_BAND_BRIGHTNESS + 0.40 * self.kick_pulse_level)
+        if pattern == "spotlight":
+            kick_weight = controls["kick_influence"] if controls["audio_enabled"] else 0.0
+            kick_ambient_level = MIN_BAND_BRIGHTNESS + 0.40 * self.kick_pulse_level
+            ambient_level = band_ambient_level * (1.0 - kick_weight) + kick_ambient_level * kick_weight
+        else:
+            kick_weight = 0.0
+            ambient_level = 0.55 if pattern in ("color_cycle", "chase") else band_ambient_level
         trigger = controls["behavior_trigger"]
         division = controls["trigger_division"]
         if trigger == "band_peaks":
@@ -611,13 +618,12 @@ class LightingController:
         base_color_index = event_step % len(colors)
         chase_position = event_step % fixture_count
         spotlight_effect = pattern == "spotlight" and controls["audio_enabled"] and (
-            self.band_color_active
-            or self.kick_pulse_level > 0.02
+            (self.band_color_active and kick_weight < 1.0)
+            or (self.kick_pulse_level > 0.02 and kick_weight > 0.0)
         )
-        if trigger in ("band_peaks", "beat_sync"):
-            spotlight_phase = float(event_step)
-        else:
-            spotlight_phase = self.band_chase_phase * self.band_chase_direction
+        band_phase = self.band_chase_phase * self.band_chase_direction
+        kick_phase = float(self.tempo_beat_events // division)
+        spotlight_phase = band_phase * (1.0 - kick_weight) + kick_phase * kick_weight
         roll_position = spotlight_phase % fixture_count
         bright_pair = int(spotlight_phase * 0.5) % 2
         palette_turn = int(spotlight_phase / fixture_count) % len(AMBIENT_COLORS)
@@ -1048,25 +1054,26 @@ PANEL_HTML = r'''<!doctype html>
 <label class="small"><input id="spotlightOverlay" type="checkbox" checked> Keep meter triggered white spotlights over this effect</label></div>
 <div class="toast" id="toast"></div></section>
 <section class="card"><div class="label"><span>Brightness</span><span class="value" id="brightnessValue">100%</span></div><input id="brightness" type="range" min="0" max="100" value="100" aria-label="Brightness"></section>
-<section class="card"><div class="audio-heading"><strong>Audio sensitivity</strong><label class="audio-toggle" title="Toggle audio response"><input id="audioEnabled" type="checkbox" checked aria-label="Audio response"><span class="switch-track" aria-hidden="true"></span></label></div><div class="label"><span>Sensitivity</span><span class="value" id="sensitivityValue">1.00×</span></div><input id="sensitivity" type="range" min="50" max="200" value="100" aria-label="Audio sensitivity"><div class="small">Raise it to react to quieter signals; turn Audio response off to ignore meter changes.</div></section>
+<section class="card"><div class="audio-heading"><strong id="audioSliderTitle">Audio sensitivity</strong><label class="audio-toggle" title="Toggle audio response"><input id="audioEnabled" type="checkbox" checked aria-label="Audio response"><span class="switch-track" aria-hidden="true"></span></label></div><div class="label"><span id="audioSliderLabel">Sensitivity</span><span class="value" id="sensitivityValue">1.00×</span></div><input id="sensitivity" type="range" min="50" max="200" value="100" aria-label="Audio sensitivity"><div class="small" id="audioSliderHelp">Raise it to react to quieter signals; turn Audio response off to ignore meter changes.</div></section>
 <section class="card"><div class="status"><strong>Meter input</strong><span class="small" id="meterState"><i class="dot"></i>Connecting</span></div><div id="fixtureMeters"></div><div class="meter"><span>Band</span><div class="track"><div class="fill" id="band"></div></div><span id="bandt">0%</span></div><div class="small" id="detail">Waiting for status…</div></section>
 <div class="row"><button id="auto">Spotlight mode</button><button class="blackout" id="blackout">Blackout</button></div>
 <script>
-const $=id=>document.getElementById(id), names={spotlight:'Spotlight',color_cycle:'Color cycle',chase:'Chase',blackout:'Blackout'},palette=['Purple','Green','Teal','Magenta','Blue','Cyan','Amber','Red'];let timer,inputNames={},outputNames={aux:{},main:''};
+const $=id=>document.getElementById(id), names={spotlight:'Spotlight',color_cycle:'Color cycle',chase:'Chase',blackout:'Blackout'},palette=['Purple','Green','Teal','Magenta','Blue','Cyan','Amber','Red'];let timer,currentControls=null,inputNames={},outputNames={aux:{},main:''};
 async function control(values){try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)});const j=await r.json();if(!r.ok)throw Error(j.error||'Request failed');$('toast').textContent='Control updated';setTimeout(()=>{$('toast').textContent=''},1300)}catch(e){$('toast').textContent='Could not update: '+e.message}}
 function delayed(value){clearTimeout(timer);timer=setTimeout(()=>control(value),110)}
 $('brightness').addEventListener('input',e=>{$('brightnessValue').textContent=e.target.value+'%';delayed({brightness:Number(e.target.value)/100})});
-$('sensitivity').addEventListener('input',e=>{$('sensitivityValue').textContent=(Number(e.target.value)/100).toFixed(2)+'×';delayed({sensitivity:Number(e.target.value)/100})});
+$('sensitivity').addEventListener('input',e=>{const value=Number(e.target.value);if($('pattern').value==='spotlight'){const influence=value/100;$('sensitivityValue').textContent=`Band ${100-value}% · Kick ${value}%`;delayed({kick_influence:influence})}else{$('sensitivityValue').textContent=(value/100).toFixed(2)+'×';delayed({sensitivity:value/100})}});
 $('audioEnabled').addEventListener('change',e=>{const enabled=e.target.checked;$('sensitivity').disabled=!enabled;control({audio_enabled:enabled})});
 $('pattern').addEventListener('change',e=>{renderMode();control({pattern:e.target.value})});$('auto').onclick=()=>{$('pattern').value='spotlight';renderMode();control({pattern:'spotlight'})};$('blackout').onclick=()=>{$('pattern').value='blackout';renderMode();control({pattern:'blackout'})};
 document.querySelectorAll('#cycleColors input').forEach(input=>input.onchange=()=>{const colors=Array.from(document.querySelectorAll('#cycleColors input:checked')).map(item=>item.value);if(!colors.length){input.checked=true;$('toast').textContent='Select at least one color';return}control({cycle_colors:colors})});
 function setCycleSpeed(value,save){$('cycleSpeed').value=value;$('cycleSpeedValue').textContent=Number(value).toFixed(2)+' s';if(save)delayed({cycle_speed:Number(value)})}
 $('cycleSpeed').addEventListener('input',e=>setCycleSpeed(e.target.value,true));
-function renderMode(){const pattern=$('pattern').value;$('patternName').textContent=names[pattern]||pattern;$('effectSettings').hidden=pattern==='blackout';$('cycleSettings').hidden=pattern!=='color_cycle';$('chaseSettings').hidden=pattern!=='chase';$('behaviorTrigger').options[0].text=pattern==='spotlight'?'Live meter':'Timer';$('divisionWrap').hidden=$('behaviorTrigger').value==='timer';$('triggerHelp').hidden=pattern!=='spotlight';}
+function renderMode(){const pattern=$('pattern').value;$('patternName').textContent=names[pattern]||pattern;$('effectSettings').hidden=pattern==='blackout';$('cycleSettings').hidden=pattern!=='color_cycle';$('chaseSettings').hidden=pattern!=='chase';$('behaviorTrigger').options[0].text=pattern==='spotlight'?'Live meter':'Timer';$('divisionWrap').hidden=$('behaviorTrigger').value==='timer';$('triggerHelp').hidden=pattern!=='spotlight';renderAudioSlider()}
+function renderAudioSlider(){if(!currentControls)return;const slider=$('sensitivity'),spotlight=$('pattern').value==='spotlight';if(spotlight){const influence=Math.round(currentControls.kick_influence*100);$('audioSliderTitle').textContent='Spotlight audio influence';$('audioSliderLabel').textContent='Band input ↔ Kick';$('audioSliderHelp').textContent='Choose whether ambient band lighting follows the assigned band inputs, the kick input, or a blend. White spotlights still follow their assigned meter inputs.';slider.min='0';slider.max='100';slider.step='1';slider.value=String(influence);slider.setAttribute('aria-label','Influence of Kick vs. Band input');$('sensitivityValue').textContent=`Band ${100-influence}% · Kick ${influence}%`}else{$('audioSliderTitle').textContent='Audio sensitivity';$('audioSliderLabel').textContent='Sensitivity';$('audioSliderHelp').textContent='Raise it to react to quieter signals; turn Audio response off to ignore meter changes.';slider.min='50';slider.max='200';slider.step='1';slider.value=String(Math.round(currentControls.sensitivity*100));slider.setAttribute('aria-label','Audio sensitivity');$('sensitivityValue').textContent=currentControls.sensitivity.toFixed(2)+'×'}}
 function bindSelect(id,key){$(id).onchange=()=>control({[key]:key==='trigger_division'?Number($(id).value):$(id).value})}bindSelect('behaviorTrigger','behavior_trigger');bindSelect('triggerDivision','trigger_division');bindSelect('cycleLayout','cycle_layout');bindSelect('chaseDirection','chase_direction');bindSelect('chaseColor','chase_color');$('behaviorTrigger').onchange=()=>{renderMode();control({behavior_trigger:$('behaviorTrigger').value})};$('spotlightOverlay').onchange=()=>control({spotlight_overlay:$('spotlightOverlay').checked});$('chaseStrobe').onchange=()=>control({chase_strobe:$('chaseStrobe').checked});$('chaseSpeed').oninput=e=>{$('chaseSpeedValue').textContent=Number(e.target.value).toFixed(1)+'×';delayed({chase_speed:Number(e.target.value)})};palette.forEach(color=>$('chaseColor').add(new Option(color,color)));
 function renderFixtureMeters(addresses){const root=$('fixtureMeters'),count=addresses.length;if(root.dataset.count===String(count))return;root.dataset.count=count;root.innerHTML='';addresses.forEach((address,index)=>{const row=document.createElement('div');row.className='meter';row.innerHTML=`<span class="meter-name"><strong>Fixture ${index+1}</strong><small id="source${index}"></small></span><div class="track"><div class="fill" id="v${index}"></div></div><span id="v${index}t">0%</span>`;root.appendChild(row)})}
 async function loadInputNames(){try{const r=await fetch('/api/input-names',{cache:'no-store'}),j=await r.json();inputNames=j.inputs||{};outputNames=j.outputs||{aux:{},main:''}}catch(e){inputNames={};outputNames={aux:{},main:''}}}
-async function refresh(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();const addresses=s.fixture_addresses||[];renderFixtureMeters(addresses);$('pattern').value=s.controls.pattern;$('behaviorTrigger').value=s.controls.behavior_trigger;renderMode();$('triggerDivision').value=String(s.controls.trigger_division);$('cycleLayout').value=s.controls.cycle_layout;$('chaseDirection').value=s.controls.chase_direction;$('chaseColor').value=s.controls.chase_color;$('chaseStrobe').checked=s.controls.chase_strobe;$('spotlightOverlay').checked=s.controls.spotlight_overlay;$('chaseSpeed').value=s.controls.chase_speed;$('chaseSpeedValue').textContent=Number(s.controls.chase_speed).toFixed(1)+'×';$('audioEnabled').checked=s.controls.audio_enabled;$('sensitivity').disabled=!s.controls.audio_enabled;$('cycleSpeed').value=s.controls.cycle_speed;$('cycleSpeedValue').textContent=Number(s.controls.cycle_speed).toFixed(2)+' s';document.querySelectorAll('#cycleColors input').forEach(input=>input.checked=s.controls.cycle_colors.includes(input.value));$('brightness').value=Math.round(s.controls.brightness*100);$('brightnessValue').textContent=Math.round(s.controls.brightness*100)+'%';$('sensitivity').value=Math.round(s.controls.sensitivity*100);$('sensitivityValue').textContent=s.controls.sensitivity.toFixed(2)+'×';for(let i=0;i<addresses.length;i++){const input=s.controls.spotlight_inputs[i],level=input?Math.round(s.vocal[input-1]*100):0,sourceName=!input?'No spotlight':input<=16?(inputNames[input]?`${inputNames[input]} (Input ${input})`:`Input ${input}`):input<=22?(outputNames.aux[input-16]?`Aux ${input-16} · ${outputNames.aux[input-16]}`:`Aux ${input-16}`):(outputNames.main?`Main ${input===23?'L':'R'} · ${outputNames.main}`:`Main ${input===23?'L':'R'}`);$('source'+i).textContent=`DMX d${String(addresses[i]).padStart(3,'0')} · ${sourceName}`;$('v'+i).style.width=level+'%';$('v'+i+'t').textContent=level+'%'}const band=Math.round(s.band*100);$('band').style.width=band+'%';$('bandt').textContent=band+'%';const live=s.meter_age!==null&&s.meter_age<1.5;$('meterState').innerHTML='<i class="dot '+(live?'ok':'')+'"></i>'+(live?'Live':'No meter data');$('detail').textContent=`${addresses.length} fixtures · DMX updates ${s.dmx_frames} · tempo ${s.tempo_bpm?Math.round(s.tempo_bpm)+' BPM':'—'} · last error: ${s.error||'none'}`}catch(e){$('meterState').innerHTML='<i class="dot"></i>Panel disconnected'}}
+async function refresh(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();const addresses=s.fixture_addresses||[];currentControls=s.controls;renderFixtureMeters(addresses);$('pattern').value=s.controls.pattern;$('behaviorTrigger').value=s.controls.behavior_trigger;renderMode();$('triggerDivision').value=String(s.controls.trigger_division);$('cycleLayout').value=s.controls.cycle_layout;$('chaseDirection').value=s.controls.chase_direction;$('chaseColor').value=s.controls.chase_color;$('chaseStrobe').checked=s.controls.chase_strobe;$('spotlightOverlay').checked=s.controls.spotlight_overlay;$('chaseSpeed').value=s.controls.chase_speed;$('chaseSpeedValue').textContent=Number(s.controls.chase_speed).toFixed(1)+'×';$('audioEnabled').checked=s.controls.audio_enabled;$('sensitivity').disabled=!s.controls.audio_enabled;$('cycleSpeed').value=s.controls.cycle_speed;$('cycleSpeedValue').textContent=Number(s.controls.cycle_speed).toFixed(2)+' s';document.querySelectorAll('#cycleColors input').forEach(input=>input.checked=s.controls.cycle_colors.includes(input.value));$('brightness').value=Math.round(s.controls.brightness*100);$('brightnessValue').textContent=Math.round(s.controls.brightness*100)+'%';renderAudioSlider();for(let i=0;i<addresses.length;i++){const input=s.controls.spotlight_inputs[i],level=input?Math.round(s.vocal[input-1]*100):0,sourceName=!input?'No spotlight':input<=16?(inputNames[input]?`${inputNames[input]} (Input ${input})`:`Input ${input}`):input<=22?(outputNames.aux[input-16]?`Aux ${input-16} · ${outputNames.aux[input-16]}`:`Aux ${input-16}`):(outputNames.main?`Main ${input===23?'L':'R'} · ${outputNames.main}`:`Main ${input===23?'L':'R'}`);$('source'+i).textContent=`DMX d${String(addresses[i]).padStart(3,'0')} · ${sourceName}`;$('v'+i).style.width=level+'%';$('v'+i+'t').textContent=level+'%'}const band=Math.round(s.band*100);$('band').style.width=band+'%';$('bandt').textContent=band+'%';const live=s.meter_age!==null&&s.meter_age<1.5;$('meterState').innerHTML='<i class="dot '+(live?'ok':'')+'"></i>'+(live?'Live':'No meter data');$('detail').textContent=`${addresses.length} fixtures · DMX updates ${s.dmx_frames} · tempo ${s.tempo_bpm?Math.round(s.tempo_bpm)+' BPM':'—'} · last error: ${s.error||'none'}`}catch(e){$('meterState').innerHTML='<i class="dot"></i>Panel disconnected'}}
 loadInputNames().then(refresh);setInterval(refresh,1000);setInterval(loadInputNames,60000);
 </script></body></html>'''
 
@@ -1267,7 +1274,7 @@ def start_control_panel(controller):
             "cycle_colors", "cycle_speed", "fixture_count", "fixture_enabled",
             "spotlight_inputs", "band_mode", "band_inputs", "osc_model", "osc_ip",
             "cycle_layout", "behavior_trigger", "trigger_division", "tempo_input",
-            "spotlight_overlay", "chase_direction", "chase_speed",
+            "kick_influence", "spotlight_overlay", "chase_direction", "chase_speed",
             "chase_color", "chase_strobe",
         }
         if not supported.intersection(data):
@@ -1372,6 +1379,14 @@ def start_control_panel(controller):
                 if type(value) is not int or not 0 <= value <= INPUT_CHANNEL_COUNT:
                     return jsonify(error="tempo_input must be Off or Input 1–16"), 400
                 updated["tempo_input"] = value
+            if "kick_influence" in data:
+                try:
+                    value = float(data["kick_influence"])
+                except (TypeError, ValueError):
+                    return jsonify(error="Kick influence must be a percentage"), 400
+                if not 0.0 <= value <= 1.0:
+                    return jsonify(error="Kick influence must be between 0% and 100%"), 400
+                updated["kick_influence"] = value
             if "spotlight_overlay" in data or "chase_strobe" in data:
                 for key in ("spotlight_overlay", "chase_strobe"):
                     if key in data:
@@ -1406,7 +1421,7 @@ def start_control_panel(controller):
                 "fixture_count", "fixture_enabled", "spotlight_inputs",
                 "band_mode", "band_inputs", "osc_model", "osc_ip",
                 "cycle_layout", "behavior_trigger", "trigger_division", "tempo_input",
-                "spotlight_overlay", "chase_direction", "chase_speed",
+                "kick_influence", "spotlight_overlay", "chase_direction", "chase_speed",
                 "chase_color", "chase_strobe",
             }
             if persistent_keys.intersection(data):
