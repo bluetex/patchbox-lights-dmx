@@ -251,9 +251,12 @@ Spotlight mode always uses the assigned meter sources.
 Chase uses the same non-empty `cycle_colors` selection as Color cycle. At each
 chase event, the color advances in the selected list order; selecting one color
 keeps the chase that color. Direction is forward, reverse, or bounce; chase
-speed ranges from 0.1× to 8×. The active group has
-`concurrent_fixtures` neighboring positions (circularly wrapping at the end of
-the rig), so a value of 2 moves two full-gain fixtures together. Other fixtures
+speed ranges from 0.1× to 8×. There are `concurrent_color_chases` chase paths, distributed around the
+fixture ring. Each path takes the next color from `cycle_colors`, wrapping when
+there are fewer selected colors than paths. Each path covers
+`concurrent_fixtures` neighboring positions (wrapping at the end of the rig),
+so a value of 2 moves two fixtures together per path. Both controls are capped
+at the configured fixture count. Other fixtures
 use the existing tail levels: 0.18 when adjacent to the active group and 0.05
 elsewhere. Optional strobe applies DMX value 24 to every active fixture's
 strobe channel; all others receive zero.
@@ -353,7 +356,8 @@ settings are written to a temporary file and atomically replaced at
 | `cycle_layout` | `unison` or `spread` | Yes |
 | `cycle_transition` | `cut` or `fade` | Yes |
 | `cycle_style` | `cycle` or `chase` | Yes |
-| `concurrent_fixtures` | Integer, 1 through the configured fixture count | Yes |
+| `concurrent_fixtures` | Integer, 1 through the configured fixture count; fixtures per color group / chase path | Yes |
+| `concurrent_color_chases` | Integer, 1 through the configured fixture count; simultaneous chase paths | Yes |
 | `behavior_trigger` | `timer`, `band_peaks`, `beat_sync` | Yes |
 | `trigger_division` | 1, 2, 4, or 8 | Yes |
 | `tempo_input` | 0 (off) or Input 1–16 | Yes |

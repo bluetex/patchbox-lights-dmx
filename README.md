@@ -24,8 +24,9 @@ just a convenient remote control.
   one color for a solid-color chase or several to advance through them in order.
   Both behaviors can run by elapsed time, band peaks, or an estimated kick-drum beat.
 - **Concurrent fixtures** — choose how many fixtures participate together.
-  Chase moves that many fixtures as a group; spread color cycles assign colors
-  to groups of that size.
+  For Chase, choose how many differently colored chase paths are active at once
+  (up to one per fixture), and how many neighboring fixtures travel in each path.
+  Spread color cycles assign colors to groups of the selected size.
 - **Blackout** — a toggle that blanks the fixtures and then returns to the
   selected lighting mode when switched off.
 - **Audio controls** — set sensitivity, tune band and
