@@ -1,6 +1,7 @@
-"""Headless XR18 OSC meter to OLA controller for four ZQ01148 fixtures."""
+"""Midas/Behringer OSC meter to OLA controller for configurable RGB fixtures."""
 
 import array
+import ipaddress
 import json
 import logging
 import math
@@ -16,16 +17,13 @@ from ola.ClientWrapper import ClientWrapper
 
 
 # ==================== CONFIGURATION ====================
-XR18_IP = "192.168.0.18"
+DEFAULT_OSC_SOURCE_IP = "192.168.0.18"
+SUPPORTED_OSC_MODELS = ("Behringer XR18", "Midas MR18")
 XR18_PORT = 10024
 OLA_UNIVERSE = 0
-FIXTURE_ADDRESSES = (1, 8, 15, 22)  # Seven DMX channels per fixture
-POD_FIXTURE_ADDRESSES = {
-    1: 22,  # Singer 4 / Pod 1
-    2: 15,  # Singer 3 / Pod 2
-    3: 8,   # Singer 2 / Pod 3
-    4: 1,   # Singer 1 / Pod 4
-}
+FIXTURE_CHANNELS = 7
+DEFAULT_FIXTURE_COUNT = 4
+MAX_FIXTURE_COUNT = 512 // FIXTURE_CHANNELS
 
 MIN_VOICE_FLOOR_DB = -60.0
 MAX_VOICE_CEILING_DB = -6.0
@@ -90,10 +88,14 @@ INPUT_CHANNEL_COUNT = 16
 AVAILABLE_PATTERNS = {"auto", "ambient", "chase_forward", "chase_reverse", "unison", "mixed", "color_cycle", "blackout"}
 DEFAULT_CONTROLS = {
     "sensitivity": 1.0,
+    "audio_enabled": True,
     "brightness": 1.0,
     "pattern": "auto",
     "cycle_colors": DEFAULT_CYCLE_COLORS,
     "cycle_speed": 1.5,
+    "osc_model": "Behringer XR18",
+    "osc_ip": DEFAULT_OSC_SOURCE_IP,
+    "fixture_count": DEFAULT_FIXTURE_COUNT,
     "fixture_enabled": [True, True, True, True],
     "spotlight_inputs": [1, 2, 3, 4],
     "band_mode": "auto",
@@ -102,27 +104,71 @@ DEFAULT_CONTROLS = {
 # =======================================================
 
 
+def fixture_addresses_for_count(count):
+    return tuple(1 + FIXTURE_CHANNELS * index for index in range(count))
+
+
+def parse_ipv4_address(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        address = ipaddress.IPv4Address(value.strip())
+    except ipaddress.AddressValueError:
+        return None
+    if address.is_unspecified or address.is_multicast or address.is_broadcast:
+        return None
+    return str(address)
+
+
 def load_control_settings():
     controls = dict(DEFAULT_CONTROLS)
-    controls["fixture_enabled"] = list(DEFAULT_CONTROLS["fixture_enabled"])
-    controls["spotlight_inputs"] = list(DEFAULT_CONTROLS["spotlight_inputs"])
     controls["band_inputs"] = list(DEFAULT_CONTROLS["band_inputs"])
     controls["cycle_colors"] = list(DEFAULT_CYCLE_COLORS)
+    controls["fixture_enabled"] = list(DEFAULT_CONTROLS["fixture_enabled"])
+    controls["spotlight_inputs"] = list(DEFAULT_CONTROLS["spotlight_inputs"])
     try:
         with open(CONTROL_SETTINGS_PATH, "r", encoding="utf-8") as settings_file:
             saved = json.load(settings_file)
         if isinstance(saved, dict):
+            saved_enabled = saved.get("fixture_enabled", [])
+            saved_spotlights = saved.get("spotlight_inputs", [])
+            fixture_count = saved.get("fixture_count")
+            if fixture_count is None:
+                legacy_lengths = [
+                    len(value) for value in (saved_enabled, saved_spotlights)
+                    if isinstance(value, list) and value
+                ]
+                fixture_count = max(legacy_lengths, default=DEFAULT_FIXTURE_COUNT)
+            if type(fixture_count) is not int or not 1 <= fixture_count <= MAX_FIXTURE_COUNT:
+                fixture_count = DEFAULT_FIXTURE_COUNT
+
             sensitivity = float(saved.get("sensitivity", controls["sensitivity"]))
             brightness = float(saved.get("brightness", controls["brightness"]))
             pattern = saved.get("pattern", controls["pattern"])
             cycle_colors = saved.get("cycle_colors", controls["cycle_colors"])
             cycle_speed = float(saved.get("cycle_speed", controls["cycle_speed"]))
-            enabled = saved.get("fixture_enabled", controls["fixture_enabled"])
-            spotlight_inputs = saved.get("spotlight_inputs", controls["spotlight_inputs"])
+            audio_enabled = saved.get("audio_enabled", controls["audio_enabled"])
+            osc_model = saved.get("osc_model", controls["osc_model"])
+            osc_ip = parse_ipv4_address(saved.get("osc_ip", controls["osc_ip"]))
             band_mode = saved.get("band_mode", controls["band_mode"])
             band_inputs = saved.get("band_inputs", controls["band_inputs"])
+            controls["fixture_count"] = fixture_count
+            controls["fixture_enabled"] = [True] * fixture_count
+            controls["spotlight_inputs"] = [0] * fixture_count
+            for index, value in enumerate(DEFAULT_CONTROLS["spotlight_inputs"][:fixture_count]):
+                controls["spotlight_inputs"][index] = value
+            if isinstance(saved_enabled, list):
+                for index, value in enumerate(saved_enabled[:fixture_count]):
+                    if type(value) is bool:
+                        controls["fixture_enabled"][index] = value
+            if isinstance(saved_spotlights, list):
+                for index, value in enumerate(saved_spotlights[:fixture_count]):
+                    if type(value) is int and 0 <= value <= INPUT_CHANNEL_COUNT:
+                        controls["spotlight_inputs"][index] = value
             if 0.5 <= sensitivity <= 2.0:
                 controls["sensitivity"] = sensitivity
+            if type(audio_enabled) is bool:
+                controls["audio_enabled"] = audio_enabled
             if 0.0 <= brightness <= 1.0:
                 controls["brightness"] = brightness
             if pattern in AVAILABLE_PATTERNS:
@@ -136,10 +182,10 @@ def load_control_settings():
                 controls["cycle_colors"] = cycle_colors
             if 0.25 <= cycle_speed <= 15.0:
                 controls["cycle_speed"] = cycle_speed
-            if isinstance(enabled, list) and len(enabled) == 4 and all(type(value) is bool for value in enabled):
-                controls["fixture_enabled"] = enabled
-            if isinstance(spotlight_inputs, list) and len(spotlight_inputs) == 4 and all(type(value) is int and 0 <= value <= INPUT_CHANNEL_COUNT for value in spotlight_inputs):
-                controls["spotlight_inputs"] = spotlight_inputs
+            if osc_model in SUPPORTED_OSC_MODELS:
+                controls["osc_model"] = osc_model
+            if osc_ip:
+                controls["osc_ip"] = osc_ip
             if band_mode in ("auto", "custom"):
                 controls["band_mode"] = band_mode
             if isinstance(band_inputs, list) and all(type(value) is int and 1 <= value <= INPUT_CHANNEL_COUNT for value in band_inputs) and len(set(band_inputs)) == len(band_inputs):
@@ -286,7 +332,11 @@ class LightingController:
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(("0.0.0.0", 0))
         self.socket.settimeout(0.001)
-        self.dmx_buffer = bytearray(FIXTURE_ADDRESSES[-1] + 7)
+        self.controls_lock = threading.RLock()
+        self.controls = load_control_settings()
+        self.fixture_addresses = fixture_addresses_for_count(self.controls["fixture_count"])
+        self.dmx_buffer = bytearray(self.fixture_addresses[-1] + FIXTURE_CHANNELS)
+        self.source_changed = threading.Event()
 
         self.voice_peak_levels = [0.0] * INPUT_CHANNEL_COUNT
         self.voice_peak_hold_until = [0.0] * INPUT_CHANNEL_COUNT
@@ -312,8 +362,6 @@ class LightingController:
         self.band_peak_candidate = 0.0
         self.band_peak_valley = 1.0
         self.band_effect_peak_count = 0
-        self.controls = load_control_settings()
-
         self.last_meter_subscription = 0.0
         self.last_valid_meter_time = None
         self.last_engine_update = time.monotonic()
@@ -325,7 +373,7 @@ class LightingController:
         self.last_network_error = None
         self.next_dmx_refresh = 0.0
 
-        for address in FIXTURE_ADDRESSES:
+        for address in self.fixture_addresses:
             self.set_fixture_color(address, self.ambient_rgb(0.0))
         try:
             self.dmx_output = OlaDmxOutput(self.dmx_buffer[1:])
@@ -334,7 +382,7 @@ class LightingController:
             raise
 
     def set_fixture_color(self, address, rgb, strobe=0):
-        fixture_index = FIXTURE_ADDRESSES.index(address)
+        fixture_index = self.fixture_addresses.index(address)
         enabled = self.controls["fixture_enabled"][fixture_index]
         brightness = (
             0.0
@@ -348,6 +396,23 @@ class LightingController:
         self.dmx_buffer[address + 4] = max(0, min(255, int(strobe)))
         self.dmx_buffer[address + 5] = 0  # Manual channel control
         self.dmx_buffer[address + 6] = 0  # Effect speed unused
+
+    def clear_audio_response(self):
+        self.voice_peak_levels[:] = [0.0] * INPUT_CHANNEL_COUNT
+        self.voice_peak_hold_until[:] = [0.0] * INPUT_CHANNEL_COUNT
+        self.voice_peak_active[:] = [False] * INPUT_CHANNEL_COUNT
+        self.voice_captured_peaks[:] = [0.0] * INPUT_CHANNEL_COUNT
+        self.white_levels[:] = [0.0] * INPUT_CHANNEL_COUNT
+        self.band_peak_level = 0.0
+        self.band_swell_level = 0.0
+        self.band_peak_hold_until = 0.0
+        self.band_strobe_until = 0.0
+        self.band_captured_peak = 0.0
+        self.band_color_active = False
+        self.band_color_rgb = BASELINE_AMBIENT_COLOR
+        self.band_peak_detector_direction = 0
+        self.band_peak_candidate = 0.0
+        self.band_peak_valley = 1.0
 
     def ambient_rgb(self, vu_level, fixture_index=None, palette_offset=0):
         color = self.band_color_rgb
@@ -364,10 +429,16 @@ class LightingController:
         )
 
     def update_outputs(self):
+        with self.controls_lock:
+            self._update_outputs_locked()
+
+    def _update_outputs_locked(self):
         now = time.monotonic()
         controls = self.controls
         pattern = controls["pattern"]
-        effect_active = self.band_color_active or self.band_peak_level > 0.01
+        effect_active = controls["audio_enabled"] and (
+            self.band_color_active or self.band_peak_level > 0.01
+        )
         if pattern in ("chase_forward", "chase_reverse"):
             effect_active = True
         elif pattern in ("ambient", "color_cycle"):
@@ -375,6 +446,8 @@ class LightingController:
         ambient_level = self.band_swell_level if effect_active else MIN_BAND_BRIGHTNESS
         if pattern in ("chase_forward", "chase_reverse"):
             ambient_level = max(MIN_BAND_BRIGHTNESS, ambient_level)
+            if not controls["audio_enabled"]:
+                ambient_level = 0.55
         if pattern in ("ambient", "color_cycle"):
             ambient_level = 0.55
         dive_age = now - self.band_dive_started
@@ -388,20 +461,25 @@ class LightingController:
             dive_gain = 1.0
 
         directed_phase = self.band_chase_phase * self.band_chase_direction
-        roll_position = directed_phase % 4.0
+        fixture_count = len(self.fixture_addresses)
+        roll_position = directed_phase % fixture_count
         bright_pair = int(directed_phase * 0.5) % 2
-        palette_turn = int(self.band_chase_phase / 4.0) % len(AMBIENT_COLORS)
+        palette_turn = int(self.band_chase_phase / fixture_count) % len(AMBIENT_COLORS)
         strobe_target = None
         if (
             effect_active
             and self.smoothed_band >= BAND_COLOR_TRIGGER
             and now < self.band_strobe_until
         ):
-            strobe_target = int(roll_position + 0.5) % len(FIXTURE_ADDRESSES)
+            strobe_target = int(roll_position + 0.5) % fixture_count
 
-        for index, address in enumerate(FIXTURE_ADDRESSES):
+        for index, address in enumerate(self.fixture_addresses):
             spotlight_input = controls["spotlight_inputs"][index]
-            peak = self.white_levels[spotlight_input - 1] if spotlight_input else 0.0
+            peak = (
+                self.white_levels[spotlight_input - 1]
+                if controls["audio_enabled"] and spotlight_input
+                else 0.0
+            )
             if peak > 0.0:
                 white = int(peak * 255)
                 self.set_fixture_color(address, (white, white, white))
@@ -425,16 +503,16 @@ class LightingController:
                 rgb = tuple(int(channel * ambient_level * AMBIENT_INTENSITY) for channel in color)
             if pattern in ("chase_forward", "chase_reverse"):
                 direction = 1 if pattern == "chase_forward" else -1
-                position = (self.band_chase_phase * direction) % 4.0
+                position = (self.band_chase_phase * direction) % fixture_count
                 distance = abs(index - position)
-                distance = min(distance, 4.0 - distance)
+                distance = min(distance, fixture_count - distance)
                 gain = max(0.12, 1.0 - distance / 1.5)
                 rgb = tuple(int(channel * gain) for channel in rgb)
             elif effect_active:
                 # Layer a smooth traveling swell with an alternating-pair pulse.
                 distance = abs(index - roll_position)
-                distance = min(distance, 4.0 - distance)
-                crest = max(0.0, 1.0 - distance / 2.0)
+                distance = min(distance, fixture_count - distance)
+                crest = max(0.0, 1.0 - distance / max(1.0, fixture_count / 2.0))
                 roll_gain = BAND_ROLL_BASE_GAIN + (1.0 - BAND_ROLL_BASE_GAIN) * crest
                 pair_gain = 1.0 if index % 2 == bright_pair else BAND_PAIR_ACCENT_GAIN
                 gain = roll_gain * pair_gain * dive_gain
@@ -445,6 +523,20 @@ class LightingController:
     def process_meter(self, values, now):
         voice_values = values[0:INPUT_CHANNEL_COUNT]
         sensitivity_db = 12.0 * math.log2(self.controls["sensitivity"])
+        if not self.controls["audio_enabled"]:
+            for index, meter_value in enumerate(voice_values):
+                level = clean_vu(int(meter_value + sensitivity_db * 256.0))
+                current = self.smoothed_voice[index]
+                self.smoothed_voice[index] = level if level > current else max(0.0, current - 0.08)
+            band_channels = effective_band_inputs(self.controls)
+            if band_channels:
+                band_meter = max(values[channel - 1] for channel in band_channels)
+                band_target = clean_vu(int(band_meter + sensitivity_db * 256.0))
+            else:
+                band_target = 0.0
+            self.smoothed_band += BAND_SMOOTHING_ALPHA * (band_target - self.smoothed_band)
+            self.band_color_rgb = BASELINE_AMBIENT_COLOR
+            return
         for index, meter_value in enumerate(voice_values):
             adjusted_meter = int(meter_value + sensitivity_db * 256.0)
             level = clean_vu(adjusted_meter)
@@ -539,6 +631,10 @@ class LightingController:
             self.band_peak_valley = 1.0
 
     def update(self, now):
+        with self.controls_lock:
+            self._update_locked(now)
+
+    def _update_locked(self, now):
         elapsed = max(0.0, now - self.last_engine_update)
         self.last_engine_update = now
         pattern = self.controls["pattern"]
@@ -569,7 +665,11 @@ class LightingController:
                 )
         if now >= self.band_peak_hold_until:
             self.band_peak_level = max(0.0, self.band_peak_level - PEAK_DECAY_PER_SECOND * elapsed)
-        swell_target = max(self.smoothed_band, self.band_peak_level * BAND_HOLD_BRIGHTNESS)
+        swell_target = (
+            max(self.smoothed_band, self.band_peak_level * BAND_HOLD_BRIGHTNESS)
+            if self.controls["audio_enabled"]
+            else 0.0
+        )
         swell_tau = (
             BAND_SWELL_ATTACK_SECONDS
             if swell_target > self.band_swell_level
@@ -600,13 +700,15 @@ class LightingController:
         received_meter = None
         while True:
             try:
-                data, _ = self.socket.recvfrom(4096)
+                data, sender = self.socket.recvfrom(4096)
             except socket.timeout:
                 break
             except OSError as exc:
                 self.last_network_error = f"{type(exc).__name__}: {exc}"
                 break
             self.udp_packets_received += 1
+            if sender[0] != self.controls["osc_ip"]:
+                continue
             packet_values = parse_meter_values(data)
             if packet_values is not None:
                 received_meter = packet_values
@@ -632,7 +734,7 @@ class LightingController:
             self.next_dmx_refresh = now + DMX_REFRESH_INTERVAL
 
     def close(self):
-        for address in FIXTURE_ADDRESSES:
+        for address in self.fixture_addresses:
             self.set_fixture_color(address, (0, 0, 0))
         try:
             self.dmx_output.update(self.dmx_buffer[1:])
@@ -652,7 +754,7 @@ class LightingController:
             "UNISON" if self.band_color_unison else "MIXED"
         ) if self.band_color_active or self.band_peak_level > 0.01 else "IDLE"
         fixture_values = []
-        for address in FIXTURE_ADDRESSES:
+        for address in self.fixture_addresses:
             channels = self.dmx_buffer[address:address + 7]
             fixture_values.append(f"F@{address}=[{','.join(str(value) for value in channels)}]")
 
@@ -680,71 +782,79 @@ def console_monitor(controller, stop_event):
 
 
 def meter_renewer(controller, stop_event):
-    """Renew XR18's roughly 10-second meter subscription independently."""
+    """Renew the selected Midas/Behringer meter subscription."""
     while not stop_event.is_set():
         try:
-            controller.socket.sendto(meters_packet, (XR18_IP, XR18_PORT))
+            source_ip = controller.controls["osc_ip"]
+            controller.socket.sendto(meters_packet, (source_ip, XR18_PORT))
             controller.last_meter_subscription = time.monotonic()
             controller.meter_subscription_requests += 1
             controller.last_network_error = None
         except OSError as exc:
             controller.last_network_error = f"{type(exc).__name__}: {exc}"
-        stop_event.wait(METER_SUBSCRIPTION_INTERVAL)
+        if controller.source_changed.wait(METER_SUBSCRIPTION_INTERVAL):
+            controller.source_changed.clear()
 
 
 PANEL_HTML = r'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <meta name="theme-color" content="#10131b"><title>Patchbox Lights</title>
 <style>
-:root{color-scheme:dark;font:17px system-ui,-apple-system,sans-serif;background:#10131b;color:#f3f5fa}*{box-sizing:border-box}body{margin:0 auto;max-width:760px;padding:22px 18px 40px}h1{font-size:27px;margin:4px 0 5px}p.sub{margin:0 0 22px;color:#aeb6c7}.card{background:#1b202c;border:1px solid #30384a;border-radius:18px;padding:18px;margin:14px 0}.label{display:flex;justify-content:space-between;gap:14px;font-weight:650;margin:0 0 12px}.value{color:#91caff;font-variant-numeric:tabular-nums}input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:64px;margin:0;background:transparent;touch-action:pan-y;cursor:pointer;accent-color:#63aaff}input[type=range]::-webkit-slider-runnable-track{height:12px;background:#3b465c;border-radius:12px}input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:34px;height:34px;margin-top:-11px;border:3px solid #f3f5fa;border-radius:50%;background:#63aaff;box-shadow:0 2px 8px #0008}input[type=range]::-moz-range-track{height:12px;background:#3b465c;border-radius:12px}input[type=range]::-moz-range-thumb{width:28px;height:28px;border:3px solid #f3f5fa;border-radius:50%;background:#63aaff;box-shadow:0 2px 8px #0008}input[type=range]:focus-visible{outline:2px solid #91caff;outline-offset:2px}select,button{font:inherit;color:inherit;background:#252d3d;border:1px solid #46516a;border-radius:12px;padding:13px 14px}select{width:100%;min-height:52px}button{min-height:54px;font-weight:700;cursor:pointer}.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.blackout{background:#8f2835;border-color:#bb5360}.meter{display:grid;grid-template-columns:90px 1fr 50px;align-items:center;gap:10px;margin:12px 0}.meter-name{font-size:14px;line-height:1.15}.meter-name strong,.meter-name small{display:block}.meter-name small{margin-top:3px;color:#aeb6c7;font-size:12px}.track{height:13px;background:#303749;border-radius:10px;overflow:hidden}.fill{height:100%;width:0;background:linear-gradient(90deg,#55c6bd,#ffd267,#ff6581);transition:width .15s}.small{font-size:14px;color:#aeb6c7;line-height:1.5}.cycle-settings{margin-top:14px}.cycle-settings[hidden]{display:none}.cycle-intro{margin:0 0 10px}.color-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.color-choice{display:flex;align-items:center;gap:7px;min-height:48px;padding:7px 9px;background:#252d3d;border:1px solid #46516a;border-radius:10px;font-size:14px}.color-choice input{width:20px;height:20px;accent-color:#63aaff}.color-dot{width:15px;height:15px;border-radius:50%;box-shadow:0 0 0 1px #fff5}.cycle-speed{margin-top:14px}.status{display:flex;justify-content:space-between;gap:12px;align-items:center}.dot{width:9px;height:9px;display:inline-block;border-radius:50%;background:#f0ba55;margin-right:8px}.dot.ok{background:#49d49a}.page-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.settings-link{display:inline-flex;align-items:center;min-height:44px;margin:0;color:#91caff;font-weight:650;text-decoration:none;white-space:nowrap}.toast{min-height:21px;color:#9bc9ff;font-size:14px;margin-top:10px}@media(max-width:430px){body{padding:16px 12px}.card{padding:15px}.meter{grid-template-columns:75px 1fr 42px;gap:7px}.color-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+:root{color-scheme:dark;font:17px system-ui,-apple-system,sans-serif;background:#10131b;color:#f3f5fa}*{box-sizing:border-box}body{margin:0 auto;max-width:760px;padding:22px 18px 40px}h1{font-size:27px;margin:4px 0 5px}p.sub{margin:0 0 22px;color:#aeb6c7}.card{background:#1b202c;border:1px solid #30384a;border-radius:18px;padding:18px;margin:14px 0}.label{display:flex;justify-content:space-between;gap:14px;font-weight:650;margin:0 0 12px}.value{color:#91caff;font-variant-numeric:tabular-nums}input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:64px;margin:0;background:transparent;touch-action:pan-y;cursor:pointer;accent-color:#63aaff}input[type=range]::-webkit-slider-runnable-track{height:12px;background:#3b465c;border-radius:12px}input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:34px;height:34px;margin-top:-11px;border:3px solid #f3f5fa;border-radius:50%;background:#63aaff;box-shadow:0 2px 8px #0008}input[type=range]::-moz-range-track{height:12px;background:#3b465c;border-radius:12px}input[type=range]::-moz-range-thumb{width:28px;height:28px;border:3px solid #f3f5fa;border-radius:50%;background:#63aaff;box-shadow:0 2px 8px #0008}input[type=range]:focus-visible{outline:2px solid #91caff;outline-offset:2px}input[type=range]:disabled{opacity:.4;cursor:not-allowed}select,button{font:inherit;color:inherit;background:#252d3d;border:1px solid #46516a;border-radius:12px;padding:13px 14px}select{width:100%;min-height:52px}button{min-height:54px;font-weight:700;cursor:pointer}.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.blackout{background:#8f2835;border-color:#bb5360}.meter{display:grid;grid-template-columns:minmax(115px,150px) 1fr 48px;align-items:center;gap:10px;margin:12px 0}.meter-name{font-size:14px;line-height:1.15}.meter-name strong,.meter-name small{display:block}.meter-name small{margin-top:3px;color:#aeb6c7;font-size:12px}.track{height:13px;background:#303749;border-radius:10px;overflow:hidden}.fill{height:100%;width:0;background:linear-gradient(90deg,#55c6bd,#ffd267,#ff6581);transition:width .15s}.small{font-size:14px;color:#aeb6c7;line-height:1.5}.status{display:flex;justify-content:space-between;gap:12px;align-items:center}.audio-switch{display:flex;align-items:center;gap:12px;min-height:44px;font-weight:650}.audio-switch input{width:25px;height:25px;accent-color:#63aaff}.dot{width:9px;height:9px;display:inline-block;border-radius:50%;background:#f0ba55;margin-right:8px}.dot.ok{background:#49d49a}.page-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.settings-link{display:inline-flex;align-items:center;min-height:44px;margin:0;color:#91caff;font-weight:650;text-decoration:none;white-space:nowrap}.cycle-settings{margin-top:14px}.cycle-settings[hidden]{display:none}.cycle-intro{margin:0 0 10px}.color-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.color-choice{display:flex;align-items:center;gap:7px;min-height:48px;padding:7px 9px;background:#252d3d;border:1px solid #46516a;border-radius:10px;font-size:14px}.color-choice input{width:20px;height:20px;accent-color:#63aaff}.color-dot{width:15px;height:15px;border-radius:50%;box-shadow:0 0 0 1px #fff5}.cycle-speed{margin-top:14px}.toast{min-height:21px;color:#9bc9ff;font-size:14px;margin-top:10px}@media(max-width:500px){body{padding:16px 12px}.card{padding:15px}.meter{grid-template-columns:minmax(90px,110px) 1fr 42px;gap:7px}.color-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style></head><body>
-<header class="page-header"><h1>Patchbox Lights</h1><a class="settings-link" href="/settings">Fixture settings →</a></header><p class="sub">Live controls · same private network</p>
+<header class="page-header"><h1>Patchbox Lights</h1><a class="settings-link" href="/settings">Settings →</a></header>
+<p class="sub">Live controls · same private network</p>
 <section class="card"><div class="label"><span>Pattern</span><span class="value" id="patternName">Auto</span></div>
 <select id="pattern" aria-label="Lighting pattern">
 <option value="auto">Auto · meter driven</option><option value="ambient">Ambient wash</option><option value="color_cycle">Color cycle</option><option value="chase_forward">Chase · forward</option><option value="chase_reverse">Chase · reverse</option><option value="unison">Unison colors</option><option value="mixed">Mixed colors</option><option value="blackout">Blackout</option></select>
 <div class="cycle-settings" id="cycleSettings" hidden><p class="small cycle-intro">Select colors to include; they cycle in the order shown. Meter peaks still flash their assigned fixture white.</p><div class="color-grid" id="cycleColors"><label class="color-choice"><input type="checkbox" value="Purple"><i class="color-dot" style="background:#a030ff"></i>Purple</label><label class="color-choice"><input type="checkbox" value="Green"><i class="color-dot" style="background:#00ff3c"></i>Green</label><label class="color-choice"><input type="checkbox" value="Teal"><i class="color-dot" style="background:#00d2be"></i>Teal</label><label class="color-choice"><input type="checkbox" value="Magenta"><i class="color-dot" style="background:#ff00b4"></i>Magenta</label><label class="color-choice"><input type="checkbox" value="Blue"><i class="color-dot" style="background:#1450ff"></i>Blue</label><label class="color-choice"><input type="checkbox" value="Cyan"><i class="color-dot" style="background:#00dcff"></i>Cyan</label><label class="color-choice"><input type="checkbox" value="Amber"><i class="color-dot" style="background:#ff9600"></i>Amber</label><label class="color-choice"><input type="checkbox" value="Red"><i class="color-dot" style="background:#ff1818"></i>Red</label></div><div class="cycle-speed"><div class="label"><span>Seconds per color</span><span class="value" id="cycleSpeedValue">1.50 s</span></div><input id="cycleSpeed" type="range" min="0.25" max="15" step="0.25" value="1.5" aria-label="Seconds per color"></div></div>
 <div class="toast" id="toast"></div></section>
 <section class="card"><div class="label"><span>Brightness</span><span class="value" id="brightnessValue">100%</span></div><input id="brightness" type="range" min="0" max="100" value="100" aria-label="Brightness"></section>
-<section class="card"><div class="label"><span>Audio sensitivity</span><span class="value" id="sensitivityValue">1.00×</span></div><input id="sensitivity" type="range" min="50" max="200" value="100" aria-label="Audio sensitivity"><div class="small">Raise it to react to quieter signals; lower it to require stronger peaks.</div></section>
-<section class="card"><div class="status"><strong>Meter input</strong><span class="small" id="meterState"><i class="dot"></i>Connecting</span></div>
-<div class="meter"><span class="meter-name"><strong>Fixture 1</strong><small id="source0">Input 1</small></span><div class="track"><div class="fill" id="v0"></div></div><span id="v0t">0%</span></div>
-<div class="meter"><span class="meter-name"><strong>Fixture 2</strong><small id="source1">Input 2</small></span><div class="track"><div class="fill" id="v1"></div></div><span id="v1t">0%</span></div>
-<div class="meter"><span class="meter-name"><strong>Fixture 3</strong><small id="source2">Input 3</small></span><div class="track"><div class="fill" id="v2"></div></div><span id="v2t">0%</span></div>
-<div class="meter"><span class="meter-name"><strong>Fixture 4</strong><small id="source3">Input 4</small></span><div class="track"><div class="fill" id="v3"></div></div><span id="v3t">0%</span></div>
-<div class="meter"><span>Band</span><div class="track"><div class="fill" id="band"></div></div><span id="bandt">0%</span></div>
-<div class="small" id="detail">Waiting for status…</div></section>
+<section class="card"><div class="status"><strong>Audio sensitivity</strong><span class="small" id="audioState">On</span></div><label class="audio-switch"><input id="audioEnabled" type="checkbox" checked><span>Audio response</span></label><div class="label"><span>Sensitivity</span><span class="value" id="sensitivityValue">1.00×</span></div><input id="sensitivity" type="range" min="50" max="200" value="100" aria-label="Audio sensitivity"><div class="small">Raise it to react to quieter signals; turn Audio response off to ignore meter changes.</div></section>
+<section class="card"><div class="status"><strong>Meter input</strong><span class="small" id="meterState"><i class="dot"></i>Connecting</span></div><div id="fixtureMeters"></div><div class="meter"><span>Band</span><div class="track"><div class="fill" id="band"></div></div><span id="bandt">0%</span></div><div class="small" id="detail">Waiting for status…</div></section>
 <div class="row"><button id="auto">Return to Auto</button><button class="blackout" id="blackout">Blackout</button></div>
 <script>
-const $=id=>document.getElementById(id), names={auto:'Auto',ambient:'Ambient wash',color_cycle:'Color cycle',chase_forward:'Chase · forward',chase_reverse:'Chase · reverse',unison:'Unison colors',mixed:'Mixed colors',blackout:'Blackout'};let timer, selectedCycleColors=['Purple','Green','Teal','Magenta'];
+const $=id=>document.getElementById(id), names={auto:'Auto',ambient:'Ambient wash',color_cycle:'Color cycle',chase_forward:'Chase · forward',chase_reverse:'Chase · reverse',unison:'Unison colors',mixed:'Mixed colors',blackout:'Blackout'};let timer;
 async function control(values){try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)});const j=await r.json();if(!r.ok)throw Error(j.error||'Request failed');$('toast').textContent='Control updated';setTimeout(()=>{$('toast').textContent=''},1300)}catch(e){$('toast').textContent='Could not update: '+e.message}}
 function delayed(value){clearTimeout(timer);timer=setTimeout(()=>control(value),110)}
 $('brightness').addEventListener('input',e=>{$('brightnessValue').textContent=e.target.value+'%';delayed({brightness:Number(e.target.value)/100})});
 $('sensitivity').addEventListener('input',e=>{$('sensitivityValue').textContent=(Number(e.target.value)/100).toFixed(2)+'×';delayed({sensitivity:Number(e.target.value)/100})});
-$('pattern').addEventListener('change',e=>{ $('cycleSettings').hidden=e.target.value!=='color_cycle';control({pattern:e.target.value})});$('auto').onclick=()=>{$('pattern').value='auto';$('cycleSettings').hidden=true;control({pattern:'auto'})};$('blackout').onclick=()=>{$('pattern').value='blackout';$('cycleSettings').hidden=true;control({pattern:'blackout'})};
-document.querySelectorAll('#cycleColors input').forEach(input=>input.onchange=()=>{const colors=Array.from(document.querySelectorAll('#cycleColors input:checked')).map(item=>item.value);if(!colors.length){input.checked=true;$('toast').textContent='Select at least one color';return}selectedCycleColors=colors;control({cycle_colors:colors})});
+$('audioEnabled').addEventListener('change',e=>{const enabled=e.target.checked;$('audioState').textContent=enabled?'On':'Off';$('sensitivity').disabled=!enabled;control({audio_enabled:enabled})});
+$('pattern').addEventListener('change',e=>{$('cycleSettings').hidden=e.target.value!=='color_cycle';control({pattern:e.target.value})});$('auto').onclick=()=>{$('pattern').value='auto';$('cycleSettings').hidden=true;control({pattern:'auto'})};$('blackout').onclick=()=>{$('pattern').value='blackout';$('cycleSettings').hidden=true;control({pattern:'blackout'})};
+document.querySelectorAll('#cycleColors input').forEach(input=>input.onchange=()=>{const colors=Array.from(document.querySelectorAll('#cycleColors input:checked')).map(item=>item.value);if(!colors.length){input.checked=true;$('toast').textContent='Select at least one color';return}control({cycle_colors:colors})});
 function setCycleSpeed(value,save){$('cycleSpeed').value=value;$('cycleSpeedValue').textContent=Number(value).toFixed(2)+' s';if(save)delayed({cycle_speed:Number(value)})}
 $('cycleSpeed').addEventListener('input',e=>setCycleSpeed(e.target.value,true));
-async function refresh(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();$('pattern').value=s.controls.pattern;$('patternName').textContent=names[s.controls.pattern]||s.controls.pattern;$('cycleSettings').hidden=s.controls.pattern!=='color_cycle';selectedCycleColors=s.controls.cycle_colors||['Purple','Green','Teal','Magenta'];document.querySelectorAll('#cycleColors input').forEach(input=>input.checked=selectedCycleColors.includes(input.value));setCycleSpeed(s.controls.cycle_speed||1.5,false);$('brightness').value=Math.round(s.controls.brightness*100);$('brightnessValue').textContent=Math.round(s.controls.brightness*100)+'%';$('sensitivity').value=Math.round(s.controls.sensitivity*100);$('sensitivityValue').textContent=s.controls.sensitivity.toFixed(2)+'×';for(let i=0;i<4;i++){const input=s.controls.spotlight_inputs[i];let n=input?Math.round(s.vocal[input-1]*100):0;$('source'+i).textContent=input?'Input '+input:'No source';$('v'+i).style.width=n+'%';$('v'+i+'t').textContent=n+'%'}let b=Math.round(s.band*100);$('band').style.width=b+'%';$('bandt').textContent=b+'%';let live=s.meter_age!==null&&s.meter_age<1.5;$('meterState').innerHTML='<i class="dot '+(live?'ok':'')+'"></i>'+(live?'Live':'No meter data');$('detail').textContent=`DMX updates ${s.dmx_frames} · last error: ${s.error||'none'}`}catch(e){$('meterState').innerHTML='<i class="dot"></i>Panel disconnected'}}
+function renderFixtureMeters(addresses){const root=$('fixtureMeters'),count=addresses.length;if(root.dataset.count===String(count))return;root.dataset.count=count;root.innerHTML='';addresses.forEach((address,index)=>{const row=document.createElement('div');row.className='meter';row.innerHTML=`<span class="meter-name"><strong>Fixture ${index+1}</strong><small id="source${index}"></small></span><div class="track"><div class="fill" id="v${index}"></div></div><span id="v${index}t">0%</span>`;root.appendChild(row)})}
+async function refresh(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();const addresses=s.fixture_addresses||[];renderFixtureMeters(addresses);$('pattern').value=s.controls.pattern;$('patternName').textContent=names[s.controls.pattern]||s.controls.pattern;$('cycleSettings').hidden=s.controls.pattern!=='color_cycle';$('audioEnabled').checked=s.controls.audio_enabled;$('audioState').textContent=s.controls.audio_enabled?'On':'Off';$('sensitivity').disabled=!s.controls.audio_enabled;$('cycleSpeed').value=s.controls.cycle_speed;$('cycleSpeedValue').textContent=Number(s.controls.cycle_speed).toFixed(2)+' s';document.querySelectorAll('#cycleColors input').forEach(input=>input.checked=s.controls.cycle_colors.includes(input.value));$('brightness').value=Math.round(s.controls.brightness*100);$('brightnessValue').textContent=Math.round(s.controls.brightness*100)+'%';$('sensitivity').value=Math.round(s.controls.sensitivity*100);$('sensitivityValue').textContent=s.controls.sensitivity.toFixed(2)+'×';for(let i=0;i<addresses.length;i++){const input=s.controls.spotlight_inputs[i],level=input?Math.round(s.vocal[input-1]*100):0;$('source'+i).textContent=`DMX ${addresses[i]} · ${input?'Input '+input:'No spotlight'}`;$('v'+i).style.width=level+'%';$('v'+i+'t').textContent=level+'%'}const band=Math.round(s.band*100);$('band').style.width=band+'%';$('bandt').textContent=band+'%';const live=s.meter_age!==null&&s.meter_age<1.5;$('meterState').innerHTML='<i class="dot '+(live?'ok':'')+'"></i>'+(live?'Live':'No meter data');$('detail').textContent=`${addresses.length} fixtures · DMX updates ${s.dmx_frames} · last error: ${s.error||'none'}`}catch(e){$('meterState').innerHTML='<i class="dot"></i>Panel disconnected'}}
 refresh();setInterval(refresh,1000);
 </script></body></html>'''
 
 SETTINGS_HTML = r'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><meta name="theme-color" content="#10131b"><title>Fixture Settings · Patchbox Lights</title>
-<style>:root{color-scheme:dark;font:17px system-ui,-apple-system,sans-serif;background:#10131b;color:#f3f5fa}*{box-sizing:border-box}body{margin:0 auto;max-width:760px;padding:22px 18px 40px}a{color:#91caff;text-decoration:none;font-weight:650;display:inline-flex;align-items:center;min-height:44px}h1{font-size:27px;margin:8px 0 5px}.sub,.hint{color:#aeb6c7;line-height:1.5}.card{background:#1b202c;border:1px solid #30384a;border-radius:18px;padding:16px;margin:14px 0}.fixture{display:grid;grid-template-columns:1fr 1.1fr;gap:14px;align-items:center;padding:14px 0;border-bottom:1px solid #30384a}.fixture:last-child{border-bottom:0}.fixture-title{font-weight:700}.fixture-address{display:block;color:#aeb6c7;font-size:14px;margin-top:3px}.enable{display:flex;align-items:center;gap:10px;min-height:52px}.enable input{width:28px;height:28px;accent-color:#63aaff}.source-label{font-size:13px;color:#aeb6c7;margin-bottom:5px}select,button{font:inherit;color:inherit;background:#252d3d;border:1px solid #46516a;border-radius:12px;padding:12px 13px}select{width:100%;min-height:52px}.hint{font-size:14px}.band-mode{display:flex;align-items:center;gap:12px;min-height:58px;font-weight:650}.band-mode input{width:28px;height:28px;accent-color:#63aaff}.channel-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.channel{display:flex;align-items:center;gap:7px;min-height:48px;padding:7px 9px;background:#252d3d;border:1px solid #46516a;border-radius:10px;font-size:14px}.channel input{width:21px;height:21px;accent-color:#63aaff}.channel input:disabled{opacity:.75}.toast{min-height:24px;color:#9bc9ff;font-size:14px;margin:8px 0}@media(max-width:500px){body{padding:16px 12px}.fixture{grid-template-columns:1fr;gap:5px}.card{padding:12px}}</style></head><body>
-<a href="/">← Live controls</a><h1>Fixture settings</h1><p class="sub">Choose which fixtures are active and which XR18 input controls each white spotlight.</p>
-<section class="card" id="fixtures"></section>
-<section class="card"><h2>Band assignment</h2><label class="band-mode"><input id="bandAuto" type="checkbox"><span>Automatically use inputs not assigned as spotlights</span></label><div id="bandChannels" class="channel-grid"></div><p class="hint" id="bandHint">When automatic is on, spotlight inputs are excluded from the band group. Turn it off to choose the band inputs yourself.</p></section>
-<p class="hint">Turning a fixture off blacks it out. Set Spotlight source to Off to keep its ambient color but remove its vocal spotlight. Assignments are saved on the Pi and survive app restarts.</p><div class="toast" id="toast">Loading settings…</div>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><meta name="theme-color" content="#10131b"><title>Settings · Patchbox Lights</title>
+<style>
+:root{color-scheme:dark;font:17px system-ui,-apple-system,sans-serif;background:#10131b;color:#f3f5fa}*{box-sizing:border-box}body{margin:0 auto;max-width:760px;padding:22px 18px 40px}a{color:#91caff;text-decoration:none;font-weight:650;display:inline-flex;align-items:center;min-height:44px}h1{font-size:27px;margin:8px 0 5px}.sub,.hint{color:#aeb6c7;line-height:1.5}.card{background:#1b202c;border:1px solid #30384a;border-radius:18px;padding:16px;margin:14px 0}.fixture{display:grid;grid-template-columns:1fr 1.1fr;gap:14px;align-items:center;padding:14px 0;border-bottom:1px solid #30384a}.fixture:last-child{border-bottom:0}.fixture-title{font-weight:700}.fixture-address{display:block;color:#aeb6c7;font-size:14px;margin-top:3px}.enable{display:flex;align-items:center;gap:10px;min-height:52px}.enable input{width:28px;height:28px;accent-color:#63aaff}.source-label{font-size:13px;color:#aeb6c7;margin-bottom:5px}select,button,input[type=text]{font:inherit;color:inherit;background:#252d3d;border:1px solid #46516a;border-radius:12px;padding:12px 13px}select,input[type=text]{width:100%;min-height:52px}button{min-height:52px;font-weight:700;cursor:pointer}.hint{font-size:14px}.band-mode{display:flex;align-items:center;gap:12px;min-height:58px;font-weight:650}.band-mode input{width:28px;height:28px;accent-color:#63aaff}.channel-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.channel{display:flex;align-items:center;gap:7px;min-height:48px;padding:7px 9px;background:#252d3d;border:1px solid #46516a;border-radius:10px;font-size:14px}.channel input{width:21px;height:21px;accent-color:#63aaff}.channel input:disabled{opacity:.75}.setting-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end}.toast{min-height:24px;color:#9bc9ff;font-size:14px;margin:8px 0}@media(max-width:500px){body{padding:16px 12px}.fixture{grid-template-columns:1fr;gap:5px}.card{padding:12px}.channel-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.setting-row{grid-template-columns:1fr}}
+</style></head><body>
+<a href="/">← Live controls</a><h1>Settings</h1><p class="sub">Configure the console source and the DMX fixtures.</p>
+<section class="card"><h2>OSC audio source</h2><p class="hint">Only Behringer XR18 and Midas MR18 meter sources are supported.</p><div class="setting-row"><label><div class="source-label">Console model</div><select id="oscModel"><option>Behringer XR18</option><option>Midas MR18</option></select></label><label><div class="source-label">Console IP address</div><input id="oscIp" type="text" inputmode="decimal" autocomplete="off" placeholder="192.168.0.18"></label></div><p class="hint">The controller subscribes to the selected console’s OSC meter stream on UDP port 10024.</p><button id="saveSource">Save audio source</button></section>
+<section class="card"><h2>Fixtures</h2><label><div class="source-label">Number of fixtures</div><select id="fixtureCount"></select></label><p class="hint">Fixtures use the current seven-channel RGB layout and get sequential DMX start addresses: 1, 8, 15, 22, and so on. Up to 73 fit in one DMX universe.</p><div id="fixtures"></div></section>
+<section class="card"><h2>Band assignment</h2><label class="band-mode"><input id="bandAuto" type="checkbox"><span>Automatically use inputs not assigned as spotlights</span></label><div id="bandChannels" class="channel-grid"></div><p class="hint">When automatic is on, spotlight inputs are excluded from the band group. Turn it off to choose the band inputs yourself.</p></section>
+<p class="hint">Turning a fixture off blacks it out. Set Spotlight source to Off to keep its ambient color but remove its white meter response. Settings are saved on the Pi and survive app restarts.</p><div class="toast" id="toast">Loading settings…</div>
 <script>
-const starts=[1,8,15,22], names=['Fixture 1','Fixture 2','Fixture 3','Fixture 4'];let enabled=[true,true,true,true],sources=[1,2,3,4],bandMode='auto',bandInputs=[];
-const $=id=>document.getElementById(id);
+const MAX_FIXTURES=73,$=id=>document.getElementById(id);let enabled=[],sources=[],bandMode='auto',bandInputs=[];
+for(let count=1;count<=MAX_FIXTURES;count++)$('fixtureCount').add(new Option(String(count),String(count)));
 function automaticBandInputs(){const spotlight=new Set(sources.filter(value=>value>0));return Array.from({length:16},(_,i)=>i+1).filter(input=>!spotlight.has(input))}
-async function save(){try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fixture_enabled:enabled,spotlight_inputs:sources,band_mode:bandMode,band_inputs:bandInputs})}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent='Settings saved on the Pi'}catch(e){$('toast').textContent='Could not save settings: '+e.message}}
-function renderBandInputs(){const automatic=bandMode==='auto',selected=automatic?automaticBandInputs():bandInputs;const root=$('bandChannels');root.innerHTML='';$('bandAuto').checked=automatic;for(let input=1;input<=16;input++){const label=document.createElement('label');label.className='channel';label.innerHTML=`<input type="checkbox" value="${input}" ${selected.includes(input)?'checked':''} ${automatic?'disabled':''}><span>Input ${input}</span>`;const checkbox=label.querySelector('input');checkbox.onchange=()=>{bandInputs=Array.from(root.querySelectorAll('input:checked')).map(item=>Number(item.value));bandMode='custom';$('bandAuto').checked=false;renderBandInputs();save()};root.appendChild(label)}}
-async function load(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();enabled=s.controls.fixture_enabled;sources=s.controls.spotlight_inputs;bandMode=s.controls.band_mode||'auto';bandInputs=s.controls.band_inputs||[];const root=$('fixtures');root.innerHTML='';const sourceOptions='<option value="0">Off</option>'+Array.from({length:16},(_,n)=>`<option value="${n+1}">Input ${n+1}</option>`).join('');for(let i=0;i<4;i++){const row=document.createElement('div');row.className='fixture';row.innerHTML=`<label class="enable"><input type="checkbox" data-enable="${i}" ${enabled[i]?'checked':''}><span><span class="fixture-title">${names[i]}</span><span class="fixture-address">DMX start ${starts[i]}</span></span></label><label><div class="source-label">Spotlight source</div><select data-source="${i}">${sourceOptions}</select></label>`;root.appendChild(row);row.querySelector('[data-source]').value=sources[i]}root.querySelectorAll('[data-enable]').forEach(el=>el.onchange=()=>{enabled[Number(el.dataset.enable)]=el.checked;save()});root.querySelectorAll('[data-source]').forEach(el=>el.onchange=()=>{sources[Number(el.dataset.source)]=Number(el.value);if(bandMode==='auto')renderBandInputs();save()});$('bandAuto').onchange=()=>{if($('bandAuto').checked){bandMode='auto'}else{if(bandMode==='auto'&&bandInputs.length===0)bandInputs=automaticBandInputs();bandMode='custom'}renderBandInputs();save()};renderBandInputs();$('toast').textContent='Ready'}catch(e){$('toast').textContent='Could not load settings: '+e.message}}
+async function post(values,message){try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent=message}catch(e){$('toast').textContent='Could not save settings: '+e.message}}
+function saveFixtures(){return post({fixture_count:enabled.length,fixture_enabled:enabled,spotlight_inputs:sources,band_mode:bandMode,band_inputs:bandInputs},'Fixture settings saved on the Pi')}
+function renderFixtures(){const root=$('fixtures');root.innerHTML='';const sourceOptions='<option value="0">Off</option>'+Array.from({length:16},(_,n)=>`<option value="${n+1}">Input ${n+1}</option>`).join('');for(let i=0;i<enabled.length;i++){const address=1+i*7,row=document.createElement('div');row.className='fixture';row.innerHTML=`<label class="enable"><input type="checkbox" data-enable="${i}" ${enabled[i]?'checked':''}><span><span class="fixture-title">Fixture ${i+1}</span><span class="fixture-address">DMX start ${address}</span></span></label><label><div class="source-label">Spotlight source</div><select data-source="${i}">${sourceOptions}</select></label>`;root.appendChild(row);row.querySelector('[data-source]').value=sources[i]}root.querySelectorAll('[data-enable]').forEach(el=>el.onchange=()=>{enabled[Number(el.dataset.enable)]=el.checked;saveFixtures()});root.querySelectorAll('[data-source]').forEach(el=>el.onchange=()=>{sources[Number(el.dataset.source)]=Number(el.value);if(bandMode==='auto')renderBandInputs();saveFixtures()})}
+function renderBandInputs(){const automatic=bandMode==='auto',selected=automatic?automaticBandInputs():bandInputs,root=$('bandChannels');root.innerHTML='';$('bandAuto').checked=automatic;for(let input=1;input<=16;input++){const label=document.createElement('label');label.className='channel';label.innerHTML=`<input type="checkbox" value="${input}" ${selected.includes(input)?'checked':''} ${automatic?'disabled':''}><span>Input ${input}</span>`;label.querySelector('input').onchange=()=>{bandInputs=Array.from(root.querySelectorAll('input:checked')).map(item=>Number(item.value));bandMode='custom';renderBandInputs();saveFixtures()};root.appendChild(label)}}
+$('fixtureCount').onchange=()=>{const count=Number($('fixtureCount').value);enabled=Array.from({length:count},(_,i)=>enabled[i]??true);sources=Array.from({length:count},(_,i)=>sources[i]??0);renderFixtures();renderBandInputs();saveFixtures()};
+$('bandAuto').onchange=()=>{if($('bandAuto').checked)bandMode='auto';else{if(bandMode==='auto'&&bandInputs.length===0)bandInputs=automaticBandInputs();bandMode='custom'}renderBandInputs();saveFixtures()};
+$('saveSource').onclick=()=>post({osc_model:$('oscModel').value,osc_ip:$('oscIp').value.trim()},'Audio source saved; reconnecting to the console')
+async function load(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();enabled=s.controls.fixture_enabled;sources=s.controls.spotlight_inputs;bandMode=s.controls.band_mode||'auto';bandInputs=s.controls.band_inputs||[];$('fixtureCount').value=s.controls.fixture_count;$('oscModel').value=s.controls.osc_model;$('oscIp').value=s.controls.osc_ip;renderFixtures();renderBandInputs();$('toast').textContent='Ready'}catch(e){$('toast').textContent='Could not load settings: '+e.message}}
 load();
 </script></body></html>'''
-
 
 
 def start_control_panel(controller):
@@ -766,6 +876,7 @@ def start_control_panel(controller):
         meter_age = None if controller.last_valid_meter_time is None else now - controller.last_valid_meter_time
         return jsonify({
             "controls": dict(controller.controls),
+            "fixture_addresses": list(controller.fixture_addresses),
             "effective_band_inputs": effective_band_inputs(controller.controls),
             "vocal": controller.smoothed_voice,
             "band": controller.smoothed_band,
@@ -779,85 +890,139 @@ def start_control_panel(controller):
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify(error="Send a JSON object"), 400
-        updated = dict(controller.controls)
-        if "sensitivity" in data:
-            try:
-                value = float(data["sensitivity"])
-            except (TypeError, ValueError):
-                return jsonify(error="Sensitivity must be a number"), 400
-            if not 0.5 <= value <= 2.0:
-                return jsonify(error="Sensitivity must be between 0.50× and 2.00×"), 400
-            updated["sensitivity"] = value
-        if "brightness" in data:
-            try:
-                value = float(data["brightness"])
-            except (TypeError, ValueError):
-                return jsonify(error="Brightness must be a number"), 400
-            if not 0.0 <= value <= 1.0:
-                return jsonify(error="Brightness must be between 0% and 100%"), 400
-            updated["brightness"] = value
-        if "pattern" in data:
-            value = data["pattern"]
-            if value not in patterns:
-                return jsonify(error="Unknown pattern"), 400
-            updated["pattern"] = value
-        if "fixture_enabled" in data:
-            value = data["fixture_enabled"]
-            if not isinstance(value, list) or len(value) != 4 or any(type(item) is not bool for item in value):
-                return jsonify(error="fixture_enabled must contain four true/false values"), 400
-            updated["fixture_enabled"] = value
-        if "spotlight_inputs" in data:
-            value = data["spotlight_inputs"]
-            if not isinstance(value, list) or len(value) != 4 or any(type(item) is not int or not 0 <= item <= INPUT_CHANNEL_COUNT for item in value):
-                return jsonify(error="spotlight_inputs must contain four values from 0 to 16"), 400
-            updated["spotlight_inputs"] = value
-        if "band_mode" in data:
-            value = data["band_mode"]
-            if value not in ("auto", "custom"):
-                return jsonify(error="band_mode must be auto or custom"), 400
-            updated["band_mode"] = value
-        if "band_inputs" in data:
-            value = data["band_inputs"]
-            if not isinstance(value, list) or any(type(item) is not int or not 1 <= item <= INPUT_CHANNEL_COUNT for item in value) or len(set(value)) != len(value):
-                return jsonify(error="band_inputs must be a list of unique inputs from 1 to 16"), 400
-            updated["band_inputs"] = value
-        if not any(key in data for key in ("sensitivity", "brightness", "pattern", "fixture_enabled", "spotlight_inputs", "band_mode", "band_inputs", "cycle_colors", "cycle_speed")):
+        supported = {
+            "sensitivity", "audio_enabled", "brightness", "pattern",
+            "cycle_colors", "cycle_speed", "fixture_count", "fixture_enabled",
+            "spotlight_inputs", "band_mode", "band_inputs", "osc_model", "osc_ip",
+        }
+        if not supported.intersection(data):
             return jsonify(error="No supported controls provided"), 400
-        if "cycle_colors" in data:
-            value = data["cycle_colors"]
+
+        with controller.controls_lock:
+            previous = controller.controls
+            updated = dict(previous)
+            if "sensitivity" in data:
+                try:
+                    value = float(data["sensitivity"])
+                except (TypeError, ValueError):
+                    return jsonify(error="Sensitivity must be a number"), 400
+                if not 0.5 <= value <= 2.0:
+                    return jsonify(error="Sensitivity must be between 0.50× and 2.00×"), 400
+                updated["sensitivity"] = value
+            if "audio_enabled" in data:
+                value = data["audio_enabled"]
+                if type(value) is not bool:
+                    return jsonify(error="audio_enabled must be true or false"), 400
+                updated["audio_enabled"] = value
+            if "brightness" in data:
+                try:
+                    value = float(data["brightness"])
+                except (TypeError, ValueError):
+                    return jsonify(error="Brightness must be a number"), 400
+                if not 0.0 <= value <= 1.0:
+                    return jsonify(error="Brightness must be between 0% and 100%"), 400
+                updated["brightness"] = value
+            if "pattern" in data:
+                value = data["pattern"]
+                if value not in patterns:
+                    return jsonify(error="Unknown pattern"), 400
+                updated["pattern"] = value
+            if "fixture_count" in data:
+                value = data["fixture_count"]
+                if type(value) is not int or not 1 <= value <= MAX_FIXTURE_COUNT:
+                    return jsonify(error=f"fixture_count must be between 1 and {MAX_FIXTURE_COUNT}"), 400
+                old_enabled = updated["fixture_enabled"]
+                old_spotlights = updated["spotlight_inputs"]
+                updated["fixture_count"] = value
+                updated["fixture_enabled"] = old_enabled[:value] + [True] * max(0, value - len(old_enabled))
+                updated["spotlight_inputs"] = old_spotlights[:value] + [0] * max(0, value - len(old_spotlights))
+            count = updated["fixture_count"]
+            if "fixture_enabled" in data:
+                value = data["fixture_enabled"]
+                if not isinstance(value, list) or len(value) != count or any(type(item) is not bool for item in value):
+                    return jsonify(error=f"fixture_enabled must contain {count} true/false values"), 400
+                updated["fixture_enabled"] = value
+            if "spotlight_inputs" in data:
+                value = data["spotlight_inputs"]
+                if not isinstance(value, list) or len(value) != count or any(type(item) is not int or not 0 <= item <= INPUT_CHANNEL_COUNT for item in value):
+                    return jsonify(error=f"spotlight_inputs must contain {count} values from 0 to 16"), 400
+                updated["spotlight_inputs"] = value
+            if "band_mode" in data:
+                value = data["band_mode"]
+                if value not in ("auto", "custom"):
+                    return jsonify(error="band_mode must be auto or custom"), 400
+                updated["band_mode"] = value
+            if "band_inputs" in data:
+                value = data["band_inputs"]
+                if not isinstance(value, list) or any(type(item) is not int or not 1 <= item <= INPUT_CHANNEL_COUNT for item in value) or len(set(value)) != len(value):
+                    return jsonify(error="band_inputs must be a list of unique inputs from 1 to 16"), 400
+                updated["band_inputs"] = value
+            if "cycle_colors" in data:
+                value = data["cycle_colors"]
+                if (
+                    not isinstance(value, list)
+                    or not value
+                    or any(not isinstance(color, str) or color not in COLOR_CYCLE_PALETTE for color in value)
+                    or len(set(value)) != len(value)
+                ):
+                    return jsonify(error="cycle_colors must be a non-empty list of unique palette colors"), 400
+                updated["cycle_colors"] = value
+            if "cycle_speed" in data:
+                try:
+                    value = float(data["cycle_speed"])
+                except (TypeError, ValueError):
+                    return jsonify(error="Cycle speed must be a number of seconds per color"), 400
+                if not 0.25 <= value <= 15.0:
+                    return jsonify(error="Cycle speed must be between 0.25 and 15 seconds per color"), 400
+                updated["cycle_speed"] = value
+            if "osc_model" in data:
+                value = data["osc_model"]
+                if value not in SUPPORTED_OSC_MODELS:
+                    return jsonify(error="Only Behringer XR18 and Midas MR18 are supported"), 400
+                updated["osc_model"] = value
+            if "osc_ip" in data:
+                value = parse_ipv4_address(data["osc_ip"])
+                if value is None:
+                    return jsonify(error="Enter a valid IPv4 address for the console"), 400
+                updated["osc_ip"] = value
+
+            persistent_keys = {
+                "audio_enabled", "pattern", "cycle_colors", "cycle_speed",
+                "fixture_count", "fixture_enabled", "spotlight_inputs",
+                "band_mode", "band_inputs", "osc_model", "osc_ip",
+            }
+            if persistent_keys.intersection(data):
+                try:
+                    save_control_settings(updated)
+                except OSError as exc:
+                    return jsonify(error=f"Could not save settings: {exc}"), 500
+
+            new_addresses = fixture_addresses_for_count(count)
+            old_addresses = controller.fixture_addresses
+            for address in old_addresses[count:]:
+                controller.dmx_buffer[address:address + FIXTURE_CHANNELS] = bytes(FIXTURE_CHANNELS)
+            required_length = new_addresses[-1] + FIXTURE_CHANNELS
+            if required_length > len(controller.dmx_buffer):
+                controller.dmx_buffer.extend(bytes(required_length - len(controller.dmx_buffer)))
+            controller.fixture_addresses = new_addresses
+            if updated["audio_enabled"] != previous["audio_enabled"]:
+                controller.clear_audio_response()
             if (
-                not isinstance(value, list)
-                or not value
-                or any(not isinstance(color, str) or color not in COLOR_CYCLE_PALETTE for color in value)
-                or len(set(value)) != len(value)
+                updated["pattern"] != previous["pattern"]
+                or updated["cycle_colors"] != previous["cycle_colors"]
+                or updated["cycle_speed"] != previous["cycle_speed"]
             ):
-                return jsonify(error="cycle_colors must be a non-empty list of unique palette colors"), 400
-            updated["cycle_colors"] = value
-        if "cycle_speed" in data:
-            try:
-                value = float(data["cycle_speed"])
-            except (TypeError, ValueError):
-                return jsonify(error="Cycle speed must be a number of seconds per color"), 400
-            if not 0.25 <= value <= 15.0:
-                return jsonify(error="Cycle speed must be between 0.25 and 15 seconds per color"), 400
-            updated["cycle_speed"] = value
-        persistent_keys = (
-            "pattern", "cycle_colors", "cycle_speed", "fixture_enabled",
-            "spotlight_inputs", "band_mode", "band_inputs",
-        )
-        if any(key in data for key in persistent_keys):
-            try:
-                save_control_settings(updated)
-            except OSError as exc:
-                return jsonify(error=f"Could not save settings: {exc}"), 500
-        if (
-            updated["pattern"] != controller.controls["pattern"]
-            or updated["cycle_colors"] != controller.controls["cycle_colors"]
-            or updated["cycle_speed"] != controller.controls["cycle_speed"]
-        ):
-            controller.color_cycle_started = time.monotonic()
-        controller.controls = updated
-        return jsonify(controls=updated)
+                controller.color_cycle_started = time.monotonic()
+            if updated["osc_ip"] != previous["osc_ip"] or updated["osc_model"] != previous["osc_model"]:
+                controller.last_valid_meter_time = None
+                controller.last_network_error = None
+                controller.smoothed_voice[:] = [0.0] * INPUT_CHANNEL_COUNT
+                controller.smoothed_band = 0.0
+                controller.clear_audio_response()
+            controller.controls = updated
+            if updated["osc_ip"] != previous["osc_ip"] or updated["osc_model"] != previous["osc_model"]:
+                controller.source_changed.set()
+            return jsonify(controls=updated)
 
     def serve():
         app.run(host=CONTROL_PANEL_HOST, port=CONTROL_PANEL_PORT, debug=False, use_reloader=False, threaded=True)
@@ -879,8 +1044,9 @@ def main():
         return 1
 
     print(
-        f"Headless lighting active: XR18 OSC {XR18_IP}:{XR18_PORT}, "
-        f"OLA universe {OLA_UNIVERSE}.",
+        f"Headless lighting active: {controller.controls['osc_model']} OSC "
+        f"{controller.controls['osc_ip']}:{XR18_PORT}, "
+        f"{controller.controls['fixture_count']} fixtures on OLA universe {OLA_UNIVERSE}.",
         flush=True,
     )
     print("Press Ctrl+C to stop.", flush=True)

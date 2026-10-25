@@ -55,11 +55,11 @@ effect channels stay off. Press Ctrl+C to send blackout through OLA and stop.
 The adapter must be patched to universe 0, and `olad` must have the FTDI USB
 DMX plugin active.
 
-## XR18 OSC to OLA lighting app
+## MR18 / XR18 OSC to OLA lighting app
 
-`lights.py` subscribes to the XR18 `/meters/1` OSC stream and sends its
-fixture values to OLA universe 0. OLA owns the FTDI adapter and refreshes the
-DMX stream; `lights.py` does not open `/dev/ttyUSB1`.
+`lights.py` subscribes to the Midas MR18 or Behringer XR18 `/meters/1` OSC
+stream and sends fixture values to OLA universe 0. OLA owns the FTDI adapter
+and refreshes the DMX stream; `lights.py` does not open `/dev/ttyUSB1`.
 
 Before running it, make sure the FTDI USB DMX plugin is active and output port
 1 is patched to universe 0. Then run:
@@ -71,8 +71,15 @@ python3 lights.py
 The app serves a mobile-friendly web panel on port 8080. Open
 `http://<pi-address>:8080/` from a device on the same private network. The panel
 provides brightness and sensitivity controls, pattern selection, and fixture
-and input assignments. The **Color cycle** pattern lets you select colors and
-set the seconds per color; assigned meter peaks still flash their fixture
-white. Color-cycle settings are saved on the Pi in
+and input assignments. **Audio response** can be turned off while the chosen
+ambient pattern continues. The **Color cycle** pattern lets you select colors
+and set the seconds per color; assigned meter peaks still flash their fixture
+white while audio response is on.
+
+The Settings page lets you select the supported console and its OSC IP address,
+and choose the fixture count. The current seven-channel fixture layout assigns
+sequential DMX start addresses (1, 8, 15, 22, …), supporting up to 73 fixtures
+in one universe. Each fixture can be enabled independently and assigned a
+spotlight input. Settings are saved on the Pi in
 `/home/patch/lights/control_settings.json`.
 
