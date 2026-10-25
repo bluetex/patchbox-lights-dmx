@@ -125,11 +125,13 @@ streams. The control panel listens on port **8080**.
 ## Finding the mixer and channel names
 
 Use **Test connection** to check that the entered mixer IP replies to OSC.
-When the mixer is reachable, the app can read input and output scribble-strip
-names. Use **Find Kick** if the kick channel is named “Kick” (or a clear kick
-variant) on the mixer; otherwise choose the input manually. The Kick sensitivity
-slider controls beat detection independently from the general and band
-sensitivity sliders.
+When a fresh set of mixer input names is read, the app looks for a channel
+scribble strip named “Kick” (or a clear kick variant) and selects it for beat
+sync automatically. You can change that selection at any time; refreshing the
+names scans for the suggested Kick again. The connection test only confirms
+that the mixer replied to OSC. Live meter status is shown on the main page. The
+Kick sensitivity slider controls beat detection independently from the general
+and band sensitivity sliders.
 
 ## If something is not working
 

@@ -65,9 +65,14 @@ The service subscribes to:
 The subscription payloads are OSC messages with a string argument; the app
 renews both streams at four-second intervals. Input and output name queries
 use short-lived UDP sockets. Input names are cached for 60 seconds for the
-currently selected mixer IP. Test connection waits up to 1.5 seconds for a
-reply. A successful test verifies that an OSC endpoint answered the `/info`
-probe; live meter status separately confirms that meter data is arriving.
+currently selected mixer IP. Whenever a new set is fetched (cache miss, expiry,
+or explicit refresh), the app scans it for a suggested kick channel and, when
+found, writes that input to `tempo_input`. The user can then select another
+input; cached reads do not overwrite that manual choice. A later explicit
+refresh or new name fetch performs the suggestion scan again. Test connection
+waits up to 1.5 seconds for a reply. A successful test verifies that an OSC
+endpoint answered the `/info` probe; live meter status separately confirms
+that meter data is arriving.
 
 ### Meter packet decoding
 
@@ -105,11 +110,11 @@ envelope state.
 ### Channel names and kick discovery
 
 Name reads send OSC get requests and collect matching string replies from the
-configured mixer IP. `Find Kick` normalizes punctuation/case and prefers an
-exact `Kick` label; it also accepts labels containing `kick`, `bass drum`, or
-exactly `BD`. If several match, an exact `Kick` match wins, then the lowest
-input number. Names are display metadata: the selected meter remains the
-numeric input channel.
+configured mixer IP. Suggested-kick detection normalizes punctuation/case and
+prefers an exact `Kick` label; it also accepts labels containing `kick`,
+`bass drum`, or exactly `BD`. If several match, an exact `Kick` match wins,
+then the lowest input number. `Find Kick` uses the same matching rule. Names
+are display metadata: the selected meter remains the numeric input channel.
 
 ## Audio analysis and control model
 

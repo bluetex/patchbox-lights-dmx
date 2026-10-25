@@ -219,6 +219,18 @@ def read_mixer_output_names(source_ip):
     return names
 
 
+def suggested_kick_input(labels):
+    """Return the best input whose scribble-strip name suggests a kick drum."""
+    candidates = []
+    for channel, label in labels.items():
+        normalized = re.sub(r"[^a-z0-9]+", " ", label.lower()).strip()
+        if normalized == "kick":
+            candidates.append((0, channel))
+        elif "kick" in normalized or "bass drum" in normalized or normalized == "bd":
+            candidates.append((1, channel))
+    return min(candidates)[1] if candidates else None
+
+
 def parse_ipv4_address(value):
     if not isinstance(value, str):
         return None
@@ -1128,17 +1140,17 @@ SETTINGS_HOME_HTML = r'''<!doctype html>
 
 AUDIO_SETTINGS_HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><meta name="theme-color" content="#10131b"><title>Audio Settings · Patchbox Lights</title>
-<style>:root{color-scheme:dark;font:17px system-ui,-apple-system,sans-serif;background:#10131b;color:#f3f5fa}*{box-sizing:border-box}body{margin:0 auto;max-width:760px;padding:22px 18px 40px}a{color:#91caff;text-decoration:none;font-weight:650;display:inline-flex;align-items:center;min-height:44px}.settings-tabs{display:flex;gap:8px;margin:8px 0 14px}.settings-tabs a{padding:8px 14px;border:1px solid #46516a;border-radius:12px}.settings-tabs a.active{background:#252d3d;color:#fff}h1{font-size:27px;margin:8px 0 5px}.sub,.hint{color:#aeb6c7;line-height:1.5}.card{background:#1b202c;border:1px solid #30384a;border-radius:18px;padding:16px;margin:14px 0}.setting-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end}.source-label{font-size:13px;color:#aeb6c7;margin-bottom:5px}select,button,input[type=text]{font:inherit;color:inherit;background:#252d3d;border:1px solid #46516a;border-radius:12px;padding:12px 13px}select,input[type=text]{width:100%;min-height:52px}button{min-height:52px;font-weight:700;cursor:pointer}.range-ends{display:flex;justify-content:space-between;gap:12px;font-size:13px;color:#aeb6c7;margin-top:-4px}.range-ends span:last-child{text-align:right}.band-mode{display:flex;align-items:center;gap:12px;min-height:52px;font-weight:650}.band-mode input{width:24px;height:24px;accent-color:#63aaff}.band-input-list{list-style:none;padding:0;margin:10px 0;display:grid;gap:6px}.band-input-item{display:flex;align-items:center;gap:10px;min-height:44px;padding:8px 10px;background:#252d3d;border:1px solid #46516a;border-radius:10px}.band-input-item input{width:22px;height:22px;accent-color:#63aaff}.band-input-item input:disabled{opacity:.75}.test-success{background:#32825e!important;border-color:#49d49a!important;color:#fff}.hint{font-size:14px}.toast{min-height:24px;color:#9bc9ff;font-size:14px;margin:8px 0}@media(max-width:500px){body{padding:16px 12px}.card{padding:12px}.setting-row{grid-template-columns:1fr}}</style></head><body>
+<style>:root{color-scheme:dark;font:17px system-ui,-apple-system,sans-serif;background:#10131b;color:#f3f5fa}*{box-sizing:border-box}body{margin:0 auto;max-width:760px;padding:22px 18px 40px}a{color:#91caff;text-decoration:none;font-weight:650;display:inline-flex;align-items:center;min-height:44px}.settings-tabs{display:flex;gap:8px;margin:8px 0 14px}.settings-tabs a{padding:8px 14px;border:1px solid #46516a;border-radius:12px}.settings-tabs a.active{background:#252d3d;color:#fff}h1{font-size:27px;margin:8px 0 5px}.sub,.hint{color:#aeb6c7;line-height:1.5}.card{background:#1b202c;border:1px solid #30384a;border-radius:18px;padding:16px;margin:14px 0}.setting-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end}.source-label{font-size:13px;color:#aeb6c7;margin-bottom:5px}select,button,input[type=text]{font:inherit;color:inherit;background:#252d3d;border:1px solid #46516a;border-radius:12px;padding:12px 13px}select,input[type=text]{width:100%;min-height:52px}button{min-height:52px;font-weight:700;cursor:pointer}.range-ends{display:flex;justify-content:space-between;gap:12px;font-size:13px;color:#aeb6c7;margin-top:-4px}.range-ends span:last-child{text-align:right}.band-mode{display:flex;align-items:center;gap:12px;min-height:52px;font-weight:650}.band-mode input{width:24px;height:24px;accent-color:#63aaff}.band-input-list{list-style:none;padding:0;margin:10px 0;display:grid;gap:6px}.band-input-item{display:flex;align-items:center;gap:10px;min-height:44px;padding:8px 10px;background:#252d3d;border:1px solid #46516a;border-radius:10px}.band-input-item input{width:22px;height:22px;accent-color:#63aaff}.band-input-item input:disabled{opacity:.75}.hint{font-size:14px}.toast{min-height:24px;color:#9bc9ff;font-size:14px;margin:8px 0}@media(max-width:500px){body{padding:16px 12px}.card{padding:12px}.setting-row{grid-template-columns:1fr}}</style></head><body>
 <a href="/settings">← Settings</a><nav class="settings-tabs"><a href="/settings/fixtures">Fixtures</a><a class="active" href="/settings/audio">Audio</a></nav><h1>Audio</h1><p class="sub">Set the mixer IP address used for audio metering.</p><p><a href="/settings/audio/help">OSC setup help →</a></p>
-<section class="card"><h2>OSC audio source</h2><p class="hint">Works with Behringer XR18 and Midas MR18. Both use the same OSC meter connection.</p><label><div class="source-label">Mixer IP address</div><input id="oscIp" type="text" inputmode="decimal" autocomplete="off" placeholder="192.168.0.18"></label><p class="hint">The controller subscribes to the selected console’s OSC meter streams on UDP port 10024.</p><div class="action-row"><button class="secondary" id="testConnection">Test connection</button><button id="saveSource">Save audio source</button></div></section>
+<section class="card"><h2>OSC audio source</h2><p class="hint">Works with Behringer XR18 and Midas MR18. Both use the same OSC meter connection.</p><label><div class="source-label">Mixer IP address</div><input id="oscIp" type="text" inputmode="decimal" autocomplete="off" placeholder="192.168.0.18"></label><p class="hint">Meter data uses UDP port 10024. Test connection checks whether the mixer replies to OSC; it does not confirm that live meters are arriving. Check the Meter input on the main page for live meter status.</p><div class="action-row"><button class="secondary" id="testConnection">Test connection</button><button id="saveSource">Save audio source</button></div><p class="hint" id="oscTestStatus" aria-live="polite"></p></section>
 <section class="card"><h2>Band inputs</h2><p class="hint">Choose which mixer inputs respond as the Band group. In automatic mode, spotlight-assigned inputs are excluded. See the Fixtures page for the current Band input list.</p><label class="band-mode"><input id="bandAuto" type="checkbox"><span>Automatically use inputs not assigned as spotlights</span></label><ul id="bandChannels" class="band-input-list"></ul><div class="action-row"><button class="secondary" id="refreshBandNames">Refresh mixer input names</button></div><p class="hint" id="bandNameStatus">Loading mixer input names…</p></section>
 <section class="card"><h2>Band sensitivity</h2><p class="hint">Adjust how strongly the Band inputs selected above react.</p><div class="label"><span>Band sensitivity</span><span class="value" id="bandSensitivityValue">1.00×</span></div><input id="bandSensitivity" type="range" min="50" max="200" value="100" aria-label="Band sensitivity"></section>
-<section class="card"><h2>Kick input for beat sync</h2><p class="hint">Choose an input with a clear kick drum signal. If the mixer channel is named “Kick” in its scribble strip, Find Kick can detect it automatically.</p><label><div class="source-label">Kick meter input</div><select id="tempoInput"><option value="0">Off</option></select></label><div class="action-row"><button class="secondary" id="findKick">Find Kick</button></div><p class="hint" id="kickNameStatus">Loading names from mixer…</p><div class="label"><span>Kick beat-sync sensitivity</span><span class="value" id="kickSensitivityValue">1.00×</span></div><input id="kickSensitivity" type="range" min="50" max="200" value="100" aria-label="Kick beat-sync sensitivity"><div class="range-ends"><span>Higher signal needed</span><span>Quieter signal triggers</span></div><p class="hint">Slide right to let quieter kicks trigger beat detection; slide left to require a stronger signal. This is independent of audio sensitivity and Spotlight’s Band ↔ Kick influence.</p><p class="hint">Beat sync estimates tempo from repeated meter peaks. Channel-name lookup reads the XR/MR18 input names over OSC.</p></section>
+<section class="card"><h2>Kick input for beat sync</h2><p class="hint">When mixer input names load or refresh, a channel named “Kick” (or a clear kick variant) is selected automatically. You can change it here any time, or use Find Kick to scan now.</p><label><div class="source-label">Kick meter input</div><select id="tempoInput"><option value="0">Off</option></select></label><div class="action-row"><button class="secondary" id="findKick">Find Kick</button></div><p class="hint" id="kickNameStatus">Loading names from mixer…</p><div class="label"><span>Kick beat-sync sensitivity</span><span class="value" id="kickSensitivityValue">1.00×</span></div><input id="kickSensitivity" type="range" min="50" max="200" value="100" aria-label="Kick beat-sync sensitivity"><div class="range-ends"><span>Higher signal needed</span><span>Quieter signal triggers</span></div><p class="hint">Slide right to let quieter kicks trigger beat detection; slide left to require a stronger signal. This is independent of audio sensitivity and Spotlight’s Band ↔ Kick influence.</p><p class="hint">Beat sync estimates tempo from repeated meter peaks. Channel-name lookup reads the XR/MR18 input names over OSC.</p></section>
 <div class="toast" id="toast">Loading settings…</div>
 <script>
 const $=id=>document.getElementById(id);let bandMode='auto',bandInputs=[],spotlightInputs=[],inputNames={};
 function populateKickInputs(names,selected){const select=$('tempoInput');select.innerHTML='';select.add(new Option('Off','0'));for(let i=1;i<=16;i++){const label=names[i]||`Input ${i}`;select.add(new Option(`${label} · Input ${i}`,String(i)))}select.value=String(selected||0)}
-async function loadKickNames(force=false,selected=Number($('tempoInput').value)){try{const r=await fetch(force?'/api/input-names/refresh':'/api/input-names',{method:force?'POST':'GET',cache:'no-store'}),j=await r.json();inputNames=j.inputs||{};populateKickInputs(inputNames,selected);renderBandInputs();const count=Object.keys(inputNames).length;$('kickNameStatus').textContent=count?`Loaded ${count} mixer input names.`:'Mixer returned no input names; showing channel numbers.';$('bandNameStatus').textContent=count?`Loaded ${count} mixer input names.`:'Mixer returned no names; showing channel numbers.'}catch(e){inputNames={};populateKickInputs({},selected);renderBandInputs();$('kickNameStatus').textContent='Could not read mixer names; showing channel numbers.';$('bandNameStatus').textContent='Could not read mixer names; showing channel numbers.'}}
+async function loadKickNames(force=false,selected=Number($('tempoInput').value)){try{const r=await fetch(force?'/api/input-names/refresh':'/api/input-names',{method:force?'POST':'GET',cache:'no-store'}),j=await r.json();if(!r.ok)throw Error(j.error||'Could not load mixer names');inputNames=j.inputs||{};const activeInput=Number(j.tempo_input??selected)||0;populateKickInputs(inputNames,activeInput);renderBandInputs();const count=Object.keys(inputNames).length;if(j.kick_auto_assigned&&j.kick_suggestion){$('kickNameStatus').textContent=`Suggested Kick found: ${inputNames[j.kick_suggestion]||'Kick'} · Input ${j.kick_suggestion}. Selected automatically; you can change it below.`}else{$('kickNameStatus').textContent=count?`Loaded ${count} mixer input names. You can change the Kick input below.`:'Mixer returned no input names; showing channel numbers.'}$('bandNameStatus').textContent=count?`Loaded ${count} mixer input names.`:'Mixer returned no names; showing channel numbers.'}catch(e){inputNames={};populateKickInputs({},selected);renderBandInputs();$('kickNameStatus').textContent='Could not read mixer names; showing channel numbers.';$('bandNameStatus').textContent='Could not read mixer names; showing channel numbers.'}}
 for(let i=1;i<=16;i++)$('tempoInput').add(new Option(`Input ${i}`,String(i)));
 function automaticBandInputs(){const spotlight=new Set(spotlightInputs.filter(value=>value>0));return Array.from({length:16},(_,i)=>i+1).filter(input=>!spotlight.has(input))}
 function renderBandInputs(){const automatic=bandMode==='auto',selected=automatic?automaticBandInputs():bandInputs,root=$('bandChannels');root.innerHTML='';$('bandAuto').checked=automatic;for(let input=1;input<=16;input++){const item=document.createElement('li'),checkbox=document.createElement('input'),name=document.createElement('span');item.className='band-input-item';checkbox.type='checkbox';checkbox.value=String(input);checkbox.checked=selected.includes(input);checkbox.disabled=automatic;name.textContent=inputNames[input]?`${inputNames[input]} · Input ${input}`:`Input ${input}`;checkbox.onchange=()=>{bandInputs=Array.from(root.querySelectorAll('input:checked')).map(el=>Number(el.value));bandMode='custom';renderBandInputs();saveBandInputs()};item.append(checkbox,name);root.appendChild(item)}}
@@ -1146,7 +1158,7 @@ async function saveBandInputs(){try{const r=await fetch('/api/control',{method:'
 $('bandAuto').onchange=()=>{if($('bandAuto').checked)bandMode='auto';else{if(bandMode==='auto'&&!bandInputs.length)bandInputs=automaticBandInputs();bandMode='custom'}renderBandInputs();saveBandInputs()};
 async function load(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();$('oscIp').value=s.controls.osc_ip;$('tempoInput').value=String(s.controls.tempo_input||0);$('kickSensitivity').value=String(Math.round(s.controls.kick_sensitivity*100));$('kickSensitivityValue').textContent=s.controls.kick_sensitivity.toFixed(2)+'×';$('bandSensitivity').value=String(Math.round(s.controls.band_sensitivity*100));$('bandSensitivityValue').textContent=s.controls.band_sensitivity.toFixed(2)+'×';bandMode=s.controls.band_mode||'auto';bandInputs=s.controls.band_inputs||[];spotlightInputs=s.controls.spotlight_inputs||[];renderBandInputs();$('toast').textContent='Ready';loadKickNames(false,s.controls.tempo_input||0)}catch(e){$('toast').textContent='Could not load settings: '+e.message}}
 $('refreshBandNames').onclick=async()=>{const button=$('refreshBandNames');button.disabled=true;await loadKickNames(true);button.disabled=false};
-$('testConnection').onclick=async()=>{const button=$('testConnection');button.classList.remove('test-success');button.disabled=true;$('toast').textContent='Testing OSC connection…';try{const r=await fetch('/api/test-osc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({osc_ip:$('oscIp').value.trim()})}),j=await r.json();if(!r.ok)throw Error(j.error||'Connection test failed');button.classList.add('test-success');$('toast').textContent=`OSC reply received from ${j.osc_ip}`}catch(e){button.classList.remove('test-success');$('toast').textContent='Connection test failed: '+e.message}finally{button.disabled=false}};$('oscIp').oninput=()=>$('testConnection').classList.remove('test-success');
+$('testConnection').onclick=async()=>{const button=$('testConnection');button.disabled=true;$('oscTestStatus').textContent='Checking for an OSC reply…';try{const r=await fetch('/api/test-osc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({osc_ip:$('oscIp').value.trim()})}),j=await r.json();if(!r.ok)throw Error(j.error||'Connection test failed');$('oscTestStatus').textContent=`OSC test passed: ${j.osc_ip} replied. This confirms the mixer answered; check the main page for live meter data.`}catch(e){$('oscTestStatus').textContent='OSC test failed: '+e.message}finally{button.disabled=false}};$('oscIp').oninput=()=>$('oscTestStatus').textContent='';
 $('saveSource').onclick=async()=>{try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({osc_ip:$('oscIp').value.trim()})}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent='Audio source saved; reconnecting to the console'}catch(e){$('toast').textContent='Could not save audio settings: '+e.message}};
 $('tempoInput').onchange=async()=>{try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tempo_input:Number($('tempoInput').value)})}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent='Kick input saved'}catch(e){$('toast').textContent='Could not save kick input: '+e.message}};
 $('bandSensitivity').oninput=e=>{const value=Number(e.target.value)/100;$('bandSensitivityValue').textContent=value.toFixed(2)+'×';clearTimeout(window.bandSensitivityTimer);window.bandSensitivityTimer=setTimeout(async()=>{try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({band_sensitivity:value})}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent='Band sensitivity saved'}catch(e){$('toast').textContent='Could not save band sensitivity: '+e.message}},180)};
@@ -1193,6 +1205,24 @@ def start_control_panel(controller):
     def panel_osc_help():
         return OSC_HELP_HTML
 
+    def assign_suggested_kick(labels):
+        suggestion = suggested_kick_input(labels)
+        if suggestion is None:
+            return None, False
+        with controller.controls_lock:
+            if controller.controls["tempo_input"] != suggestion:
+                updated = dict(controller.controls)
+                updated["tempo_input"] = suggestion
+                save_control_settings(updated)
+                controller.controls = updated
+                controller.tempo_beat_events = 0
+                controller.tempo_bpm = None
+                controller.tempo_intervals.clear()
+                controller.tempo_last_beat = None
+                controller.tempo_armed = True
+                controller.kick_pulse_level = 0.0
+        return suggestion, True
+
     @app.post("/api/test-osc")
     def panel_test_osc():
         data = request.get_json(silent=True)
@@ -1231,17 +1261,10 @@ def start_control_panel(controller):
             controller.output_names = read_mixer_output_names(source_ip)
             controller.input_names_ip = source_ip
             controller.input_names_read_at = time.monotonic()
-            candidates = []
-            for channel, label in labels.items():
-                normalized = re.sub(r"[^a-z0-9]+", " ", label.lower()).strip()
-                if normalized == "kick":
-                    candidates.append((0, channel, label))
-                elif "kick" in normalized or "bass drum" in normalized or normalized == "bd":
-                    candidates.append((1, channel, label))
-            if not candidates:
+            channel = suggested_kick_input(labels)
+            if channel is None:
                 return jsonify(error="No channel named Kick was found. Name the kick channel ‘Kick’ on the mixer, or select its input manually."), 404
-            _, channel, label = sorted(candidates)[0]
-            return jsonify(input=channel, label=label)
+            return jsonify(input=channel, label=labels[channel])
         except OSError as exc:
             return jsonify(error=f"Could not read mixer channel names: {type(exc).__name__}: {exc}"), 502
 
@@ -1249,15 +1272,19 @@ def start_control_panel(controller):
     def panel_input_names():
         source_ip = controller.controls["osc_ip"]
         now = time.monotonic()
+        auto_assigned = False
         if controller.input_names_ip != source_ip or now - controller.input_names_read_at > 60:
             try:
                 controller.input_names = read_mixer_input_names(source_ip)
                 controller.output_names = read_mixer_output_names(source_ip)
                 controller.input_names_ip = source_ip
                 controller.input_names_read_at = time.monotonic()
+                suggestion, auto_assigned = assign_suggested_kick(controller.input_names)
             except OSError as exc:
                 return jsonify(inputs=controller.input_names, outputs=controller.output_names, error=f"Could not read mixer names: {type(exc).__name__}: {exc}"), 200
-        return jsonify(inputs=controller.input_names, outputs=controller.output_names, refreshed_at=controller.input_names_read_at)
+        else:
+            suggestion = suggested_kick_input(controller.input_names)
+        return jsonify(inputs=controller.input_names, outputs=controller.output_names, refreshed_at=controller.input_names_read_at, tempo_input=controller.controls["tempo_input"], kick_suggestion=suggestion, kick_auto_assigned=auto_assigned)
 
     @app.post("/api/input-names/refresh")
     def panel_refresh_input_names():
@@ -1267,9 +1294,10 @@ def start_control_panel(controller):
             controller.output_names = read_mixer_output_names(source_ip)
             controller.input_names_ip = source_ip
             controller.input_names_read_at = time.monotonic()
+            suggestion, auto_assigned = assign_suggested_kick(controller.input_names)
         except OSError as exc:
             return jsonify(error=f"Could not read mixer input names: {type(exc).__name__}: {exc}"), 502
-        return jsonify(inputs=controller.input_names, outputs=controller.output_names, refreshed_at=controller.input_names_read_at)
+        return jsonify(inputs=controller.input_names, outputs=controller.output_names, refreshed_at=controller.input_names_read_at, tempo_input=controller.controls["tempo_input"], kick_suggestion=suggestion, kick_auto_assigned=auto_assigned)
 
     @app.get("/api/status")
     def panel_status():
