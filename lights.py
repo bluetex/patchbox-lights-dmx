@@ -115,7 +115,10 @@ def parse_ipv4_address(value):
         address = ipaddress.IPv4Address(value.strip())
     except ipaddress.AddressValueError:
         return None
-    if address.is_unspecified or address.is_multicast or address.is_broadcast:
+    # ``IPv4Address.is_broadcast`` is not available in every Python version
+    # shipped with Raspberry Pi OS, so check the limited-broadcast address
+    # directly for compatibility.
+    if address.is_unspecified or address.is_multicast or str(address) == "255.255.255.255":
         return None
     return str(address)
 
