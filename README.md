@@ -18,8 +18,9 @@ just a convenient remote control.
 - **Spotlight** — assigned mixer meters can raise their corresponding fixtures
   into white. Other fixtures provide colored, audio-responsive background light.
 - **Color cycle** — cycle through a palette you choose, together or spread
-  across the fixtures. The cycle can run by elapsed time, band peaks, or an
-  estimated kick-drum beat.
+  across the fixtures, with either an immediate cut or a smooth fade between
+  colors. The cycle can run by elapsed time, band peaks, or an estimated
+  kick-drum beat.
 - **Chase** — send a colored accent around the fixtures, forward, backward, or
   bouncing. The chase can optionally strobe.
 - **Blackout** — a toggle that blanks the fixtures and then returns to the

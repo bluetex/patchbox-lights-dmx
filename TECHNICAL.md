@@ -217,8 +217,13 @@ spotlights take priority for their assigned fixtures when active.
 The user selects one or more named RGB colors. The timer trigger uses
 `cycle_speed` seconds per color (0.25–15 s). Event triggers advance according
 to `trigger_division`. Unison gives every fixture the same palette position;
-spread offsets the color index by fixture number. Ambient palette intensity is
-50% before master brightness.
+spread offsets the color index by fixture number. `cycle_transition` selects
+`cut` (immediate change, the default) or `fade`. Fade linearly interpolates
+from the previous palette color to the new color over 0.5 s after each advance;
+timer-driven fades are capped at the configured seconds-per-color interval.
+The initial color and changes to cycle configuration start without an
+unrequested transition. Ambient palette intensity is 50% before master
+brightness.
 
 ### Chase
 
@@ -319,6 +324,7 @@ settings are written to a temporary file and atomically replaced at
 | `cycle_colors` | Non-empty unique list of named palette colors | Yes |
 | `cycle_speed` | Seconds per color, 0.25–15 | Yes |
 | `cycle_layout` | `unison` or `spread` | Yes |
+| `cycle_transition` | `cut` or `fade` | Yes |
 | `behavior_trigger` | `timer`, `band_peaks`, `beat_sync` | Yes |
 | `trigger_division` | 1, 2, 4, or 8 | Yes |
 | `tempo_input` | 0 (off) or Input 1–16 | Yes |
