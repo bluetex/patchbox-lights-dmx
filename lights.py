@@ -57,6 +57,7 @@ TEMPO_TRIGGER_LEVEL = 0.46
 TEMPO_RELEASE_LEVEL = 0.22
 TEMPO_MIN_INTERVAL_SECONDS = 0.25
 TEMPO_MAX_INTERVAL_SECONDS = 2.0
+KICK_PULSE_DECAY_SECONDS = 0.32
 BAND_CHASE_BASE_STEPS_PER_SECOND = 0.125
 BAND_CHASE_LEVEL_STEPS_PER_SECOND = 0.75
 BAND_PAIR_ACCENT_GAIN = 0.66
@@ -509,6 +510,7 @@ class LightingController:
         self.tempo_intervals = []
         self.tempo_last_beat = None
         self.tempo_armed = True
+        self.kick_pulse_level = 0.0
         self.last_meter_subscription = 0.0
         self.last_valid_meter_time = None
         self.last_engine_update = time.monotonic()
@@ -551,6 +553,7 @@ class LightingController:
         self.voice_captured_peaks[:] = [0.0] * SPOTLIGHT_SOURCE_COUNT
         self.white_levels[:] = [0.0] * SPOTLIGHT_SOURCE_COUNT
         self.band_peak_level = 0.0
+        self.kick_pulse_level = 0.0
         self.band_swell_level = 0.0
         self.band_peak_hold_until = 0.0
         self.band_captured_peak = 0.0
@@ -590,6 +593,8 @@ class LightingController:
             if controls["audio_enabled"] and (self.band_color_active or self.band_peak_level > 0.01)
             else MIN_BAND_BRIGHTNESS
         )
+        if pattern == "spotlight" and controls["audio_enabled"] and controls["behavior_trigger"] == "beat_sync":
+            ambient_level = max(ambient_level, MIN_BAND_BRIGHTNESS + 0.40 * self.kick_pulse_level)
         trigger = controls["behavior_trigger"]
         division = controls["trigger_division"]
         if trigger == "band_peaks":
@@ -605,11 +610,17 @@ class LightingController:
         colors = controls["cycle_colors"]
         base_color_index = event_step % len(colors)
         chase_position = event_step % fixture_count
-        spotlight_effect = pattern == "spotlight" and controls["audio_enabled"] and self.band_color_active
-        spotlight_phase = self.band_chase_phase * self.band_chase_direction
+        spotlight_effect = pattern == "spotlight" and controls["audio_enabled"] and (
+            self.band_color_active
+            or self.kick_pulse_level > 0.02
+        )
+        if trigger in ("band_peaks", "beat_sync"):
+            spotlight_phase = float(event_step)
+        else:
+            spotlight_phase = self.band_chase_phase * self.band_chase_direction
         roll_position = spotlight_phase % fixture_count
         bright_pair = int(spotlight_phase * 0.5) % 2
-        palette_turn = int(self.band_chase_phase / fixture_count) % len(AMBIENT_COLORS)
+        palette_turn = int(spotlight_phase / fixture_count) % len(AMBIENT_COLORS)
         dive_age = now - self.band_dive_started
         if dive_age < BAND_PEAK_DIVE_SECONDS:
             dive_gain = BAND_PEAK_DIVE_GAIN
@@ -841,6 +852,7 @@ class LightingController:
                 )
         self.tempo_last_beat = now
         self.tempo_beat_events += 1
+        self.kick_pulse_level = 1.0
 
     def update(self, now):
         with self.controls_lock:
@@ -850,6 +862,10 @@ class LightingController:
         elapsed = max(0.0, now - self.last_engine_update)
         self.last_engine_update = now
         pattern = self.controls["pattern"]
+        self.kick_pulse_level = max(
+            0.0,
+            self.kick_pulse_level - elapsed / KICK_PULSE_DECAY_SECONDS,
+        )
         if pattern == "spotlight" and (self.band_color_active or self.band_peak_level > 0.01):
             chase_rate = BAND_CHASE_BASE_STEPS_PER_SECOND + self.smoothed_band * BAND_CHASE_LEVEL_STEPS_PER_SECOND
             self.band_chase_phase += elapsed * chase_rate
@@ -1026,7 +1042,7 @@ PANEL_HTML = r'''<!doctype html>
 <p class="sub">Live controls · same private network</p>
 <section class="card"><div class="label"><span>Mode</span><span class="value" id="patternName">Spotlight</span></div>
 <select id="pattern" aria-label="Lighting mode"><option value="spotlight">Spotlight · meter driven</option><option value="color_cycle">Color cycle</option><option value="chase">Chase</option><option value="blackout">Blackout</option></select>
-<div id="effectSettings" hidden><label class="small">Effect trigger<select id="behaviorTrigger"><option value="timer">Timer</option><option value="band_peaks">Band peaks</option><option value="beat_sync">Kick beat sync</option></select></label><label class="small" id="divisionWrap" hidden>Advance every<select id="triggerDivision"><option value="1">1 beat / peak</option><option value="2">2 beats / peaks</option><option value="4">4 beats / peaks</option><option value="8">8 beats / peaks</option></select></label>
+<div id="effectSettings" hidden><label class="small">Band/effect trigger<select id="behaviorTrigger"><option value="timer">Timer</option><option value="band_peaks">Band peaks</option><option value="beat_sync">Kick beat sync</option></select></label><p class="small" id="triggerHelp">Kick beat sync uses the selected kick input to advance the ambient band lights; assigned white spotlights keep following their own meters.</p><label class="small" id="divisionWrap" hidden>Advance every<select id="triggerDivision"><option value="1">1 beat / peak</option><option value="2">2 beats / peaks</option><option value="4">4 beats / peaks</option><option value="8">8 beats / peaks</option></select></label>
 <div id="cycleSettings" hidden><p class="small cycle-intro">Choose the colors and whether fixtures change together or spread across the palette.</p><div class="color-grid" id="cycleColors"><label class="color-choice"><input type="checkbox" value="Purple"><i class="color-dot" style="background:#a030ff"></i>Purple</label><label class="color-choice"><input type="checkbox" value="Green"><i class="color-dot" style="background:#00ff3c"></i>Green</label><label class="color-choice"><input type="checkbox" value="Teal"><i class="color-dot" style="background:#00d2be"></i>Teal</label><label class="color-choice"><input type="checkbox" value="Magenta"><i class="color-dot" style="background:#ff00b4"></i>Magenta</label><label class="color-choice"><input type="checkbox" value="Blue"><i class="color-dot" style="background:#1450ff"></i>Blue</label><label class="color-choice"><input type="checkbox" value="Cyan"><i class="color-dot" style="background:#00dcff"></i>Cyan</label><label class="color-choice"><input type="checkbox" value="Amber"><i class="color-dot" style="background:#ff9600"></i>Amber</label><label class="color-choice"><input type="checkbox" value="Red"><i class="color-dot" style="background:#ff1818"></i>Red</label></div><label class="small">Fixture layout<select id="cycleLayout"><option value="unison">Unison colors</option><option value="spread">Spread colors</option></select></label><div class="cycle-speed"><div class="label"><span>Seconds per color</span><span class="value" id="cycleSpeedValue">1.50 s</span></div><input id="cycleSpeed" type="range" min="0.25" max="15" step="0.25" value="1.5" aria-label="Seconds per color"></div></div>
 <div id="chaseSettings" hidden><label class="small">Chase color<select id="chaseColor"></select></label><label class="small">Direction<select id="chaseDirection"><option value="forward">Forward · 1 to 4</option><option value="reverse">Reverse · 4 to 1</option><option value="bounce">Bounce</option></select></label><div class="cycle-speed"><div class="label"><span>Chase speed</span><span class="value" id="chaseSpeedValue">1.00×</span></div><input id="chaseSpeed" type="range" min="0.1" max="8" step="0.1" value="1" aria-label="Chase speed"></div><label class="small"><input id="chaseStrobe" type="checkbox"> Strobe the active fixture</label></div>
 <label class="small"><input id="spotlightOverlay" type="checkbox" checked> Keep meter triggered white spotlights over this effect</label></div>
@@ -1046,7 +1062,7 @@ $('pattern').addEventListener('change',e=>{renderMode();control({pattern:e.targe
 document.querySelectorAll('#cycleColors input').forEach(input=>input.onchange=()=>{const colors=Array.from(document.querySelectorAll('#cycleColors input:checked')).map(item=>item.value);if(!colors.length){input.checked=true;$('toast').textContent='Select at least one color';return}control({cycle_colors:colors})});
 function setCycleSpeed(value,save){$('cycleSpeed').value=value;$('cycleSpeedValue').textContent=Number(value).toFixed(2)+' s';if(save)delayed({cycle_speed:Number(value)})}
 $('cycleSpeed').addEventListener('input',e=>setCycleSpeed(e.target.value,true));
-function renderMode(){const pattern=$('pattern').value;$('patternName').textContent=names[pattern]||pattern;$('effectSettings').hidden=!['color_cycle','chase'].includes(pattern);$('cycleSettings').hidden=pattern!=='color_cycle';$('chaseSettings').hidden=pattern!=='chase';$('divisionWrap').hidden=$('behaviorTrigger').value==='timer';}
+function renderMode(){const pattern=$('pattern').value;$('patternName').textContent=names[pattern]||pattern;$('effectSettings').hidden=pattern==='blackout';$('cycleSettings').hidden=pattern!=='color_cycle';$('chaseSettings').hidden=pattern!=='chase';$('behaviorTrigger').options[0].text=pattern==='spotlight'?'Live meter':'Timer';$('divisionWrap').hidden=$('behaviorTrigger').value==='timer';$('triggerHelp').hidden=pattern!=='spotlight';}
 function bindSelect(id,key){$(id).onchange=()=>control({[key]:key==='trigger_division'?Number($(id).value):$(id).value})}bindSelect('behaviorTrigger','behavior_trigger');bindSelect('triggerDivision','trigger_division');bindSelect('cycleLayout','cycle_layout');bindSelect('chaseDirection','chase_direction');bindSelect('chaseColor','chase_color');$('behaviorTrigger').onchange=()=>{renderMode();control({behavior_trigger:$('behaviorTrigger').value})};$('spotlightOverlay').onchange=()=>control({spotlight_overlay:$('spotlightOverlay').checked});$('chaseStrobe').onchange=()=>control({chase_strobe:$('chaseStrobe').checked});$('chaseSpeed').oninput=e=>{$('chaseSpeedValue').textContent=Number(e.target.value).toFixed(1)+'×';delayed({chase_speed:Number(e.target.value)})};palette.forEach(color=>$('chaseColor').add(new Option(color,color)));
 function renderFixtureMeters(addresses){const root=$('fixtureMeters'),count=addresses.length;if(root.dataset.count===String(count))return;root.dataset.count=count;root.innerHTML='';addresses.forEach((address,index)=>{const row=document.createElement('div');row.className='meter';row.innerHTML=`<span class="meter-name"><strong>Fixture ${index+1}</strong><small id="source${index}"></small></span><div class="track"><div class="fill" id="v${index}"></div></div><span id="v${index}t">0%</span>`;root.appendChild(row)})}
 async function loadInputNames(){try{const r=await fetch('/api/input-names',{cache:'no-store'}),j=await r.json();inputNames=j.inputs||{};outputNames=j.outputs||{aux:{},main:''}}catch(e){inputNames={};outputNames={aux:{},main:''}}}
