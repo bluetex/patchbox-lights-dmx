@@ -248,8 +248,10 @@ Spotlight mode always uses the assigned meter sources.
 
 ### Chase behavior
 
-The selected chase color moves among fixture positions. Direction is forward,
-reverse, or bounce; chase speed ranges from 0.1× to 8×. The active group has
+Chase uses the same non-empty `cycle_colors` selection as Color cycle. At each
+chase event, the color advances in the selected list order; selecting one color
+keeps the chase that color. Direction is forward, reverse, or bounce; chase
+speed ranges from 0.1× to 8×. The active group has
 `concurrent_fixtures` neighboring positions (circularly wrapping at the end of
 the rig), so a value of 2 moves two full-gain fixtures together. Other fixtures
 use the existing tail levels: 0.18 when adjacent to the active group and 0.05
@@ -359,7 +361,7 @@ settings are written to a temporary file and atomically replaced at
 | `spotlight_overlay` | Boolean | Yes |
 | `chase_direction` | `forward`, `reverse`, `bounce` | Yes |
 | `chase_speed` | Number, 0.1–8.0 | Yes |
-| `chase_color` | Named palette color | Yes |
+| `chase_color` | Legacy API alias; sets `cycle_colors` to that single color | No |
 | `chase_strobe` | Boolean | Yes |
 | `osc_model`, `osc_ip` | Supported model / valid IPv4 address | Yes |
 

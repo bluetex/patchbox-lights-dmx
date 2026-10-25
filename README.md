@@ -20,8 +20,9 @@ just a convenient remote control.
 - **Color cycle** — cycle through a palette you choose, together or spread
   across the fixtures, with either an immediate cut or a smooth fade between
   colors. Or choose its **Chase** behavior to send a colored accent forward,
-  backward, or bouncing. Both behaviors can run by elapsed time, band peaks,
-  or an estimated kick-drum beat.
+  backward, or bouncing, using the same color checkboxes as Color cycle. Pick
+  one color for a solid-color chase or several to advance through them in order.
+  Both behaviors can run by elapsed time, band peaks, or an estimated kick-drum beat.
 - **Concurrent fixtures** — choose how many fixtures participate together.
   Chase moves that many fixtures as a group; spread color cycles assign colors
   to groups of that size.
