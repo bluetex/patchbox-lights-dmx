@@ -790,17 +790,22 @@ class LightingController:
                     rgb = blend_rgb(previous_rgb, rgb, cycle_fade)
                 rgb = tuple(int(channel * ambient_level * AMBIENT_INTENSITY) for channel in rgb)
             elif chase_active:
-                mixed_rgb = [0, 0, 0]
-                for chase_color, lane_positions in chase_lanes:
-                    distance = min(
+                nearest_color, nearest_positions = min(
+                    chase_lanes,
+                    key=lambda lane: min(
                         min(abs(index - position), fixture_count - abs(index - position))
-                        for position in lane_positions
-                    )
-                    gain = 1.0 if distance == 0 else (0.18 if distance == 1 else 0.05)
-                    color_rgb = COLOR_CYCLE_PALETTE[chase_color]
-                    for channel, value in enumerate(color_rgb):
-                        mixed_rgb[channel] = min(255, mixed_rgb[channel] + int(value * gain * ambient_level))
-                rgb = tuple(mixed_rgb)
+                        for position in lane[1]
+                    ),
+                )
+                distance = min(
+                    min(abs(index - position), fixture_count - abs(index - position))
+                    for position in nearest_positions
+                )
+                gain = 1.0 if distance == 0 else (0.18 if distance == 1 else 0.05)
+                rgb = tuple(
+                    int(channel * gain * ambient_level)
+                    for channel in COLOR_CYCLE_PALETTE[nearest_color]
+                )
             else:
                 rgb = self.ambient_rgb(
                     ambient_level,
