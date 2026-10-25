@@ -152,6 +152,33 @@ def parse_osc_string_message(data):
     return (address, value) if value is not None else None
 
 
+def read_mixer_input_names(source_ip):
+    """Read channel scribble-strip labels from an XR18/MR18 by OSC."""
+    names = {}
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("0.0.0.0", 0))
+        probe.settimeout(0.08)
+        for channel in range(1, INPUT_CHANNEL_COUNT + 1):
+            path = f"/ch/{channel:02d}/config/name"
+            probe.sendto(osc_string(path) + osc_string(","), (source_ip, XR18_PORT))
+        deadline = time.monotonic() + 1.2
+        while time.monotonic() < deadline:
+            try:
+                response, sender = probe.recvfrom(2048)
+            except socket.timeout:
+                continue
+            if sender[0] != source_ip:
+                continue
+            parsed = parse_osc_string_message(response)
+            if not parsed:
+                continue
+            address, label = parsed
+            match = re.fullmatch(r"/ch/(\d{2})/config/name", address)
+            if match and label.strip():
+                names[int(match.group(1))] = label.strip()
+    return names
+
+
 def parse_ipv4_address(value):
     if not isinstance(value, str):
         return None
@@ -411,6 +438,9 @@ class LightingController:
         self.socket.settimeout(0.001)
         self.controls_lock = threading.RLock()
         self.controls = load_control_settings()
+        self.input_names = {}
+        self.input_names_ip = None
+        self.input_names_read_at = 0.0
         self.fixture_addresses = fixture_addresses_for_count(self.controls["fixture_count"])
         self.dmx_buffer = bytearray(self.fixture_addresses[-1] + FIXTURE_CHANNELS)
         self.source_changed = threading.Event()
@@ -970,7 +1000,7 @@ PANEL_HTML = r'''<!doctype html>
 <section class="card"><div class="status"><strong>Meter input</strong><span class="small" id="meterState"><i class="dot"></i>Connecting</span></div><div id="fixtureMeters"></div><div class="meter"><span>Band</span><div class="track"><div class="fill" id="band"></div></div><span id="bandt">0%</span></div><div class="small" id="detail">Waiting for status…</div></section>
 <div class="row"><button id="auto">Spotlight mode</button><button class="blackout" id="blackout">Blackout</button></div>
 <script>
-const $=id=>document.getElementById(id), names={spotlight:'Spotlight',color_cycle:'Color cycle',chase:'Chase',blackout:'Blackout'},palette=['Purple','Green','Teal','Magenta','Blue','Cyan','Amber','Red'];let timer;
+const $=id=>document.getElementById(id), names={spotlight:'Spotlight',color_cycle:'Color cycle',chase:'Chase',blackout:'Blackout'},palette=['Purple','Green','Teal','Magenta','Blue','Cyan','Amber','Red'];let timer,inputNames={};
 async function control(values){try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)});const j=await r.json();if(!r.ok)throw Error(j.error||'Request failed');$('toast').textContent='Control updated';setTimeout(()=>{$('toast').textContent=''},1300)}catch(e){$('toast').textContent='Could not update: '+e.message}}
 function delayed(value){clearTimeout(timer);timer=setTimeout(()=>control(value),110)}
 $('brightness').addEventListener('input',e=>{$('brightnessValue').textContent=e.target.value+'%';delayed({brightness:Number(e.target.value)/100})});
@@ -983,8 +1013,9 @@ $('cycleSpeed').addEventListener('input',e=>setCycleSpeed(e.target.value,true));
 function renderMode(){const pattern=$('pattern').value;$('patternName').textContent=names[pattern]||pattern;$('effectSettings').hidden=!['color_cycle','chase'].includes(pattern);$('cycleSettings').hidden=pattern!=='color_cycle';$('chaseSettings').hidden=pattern!=='chase';$('divisionWrap').hidden=$('behaviorTrigger').value==='timer';}
 function bindSelect(id,key){$(id).onchange=()=>control({[key]:key==='trigger_division'?Number($(id).value):$(id).value})}bindSelect('behaviorTrigger','behavior_trigger');bindSelect('triggerDivision','trigger_division');bindSelect('cycleLayout','cycle_layout');bindSelect('chaseDirection','chase_direction');bindSelect('chaseColor','chase_color');$('behaviorTrigger').onchange=()=>{renderMode();control({behavior_trigger:$('behaviorTrigger').value})};$('spotlightOverlay').onchange=()=>control({spotlight_overlay:$('spotlightOverlay').checked});$('chaseStrobe').onchange=()=>control({chase_strobe:$('chaseStrobe').checked});$('chaseSpeed').oninput=e=>{$('chaseSpeedValue').textContent=Number(e.target.value).toFixed(1)+'×';delayed({chase_speed:Number(e.target.value)})};palette.forEach(color=>$('chaseColor').add(new Option(color,color)));
 function renderFixtureMeters(addresses){const root=$('fixtureMeters'),count=addresses.length;if(root.dataset.count===String(count))return;root.dataset.count=count;root.innerHTML='';addresses.forEach((address,index)=>{const row=document.createElement('div');row.className='meter';row.innerHTML=`<span class="meter-name"><strong>Fixture ${index+1}</strong><small id="source${index}"></small></span><div class="track"><div class="fill" id="v${index}"></div></div><span id="v${index}t">0%</span>`;root.appendChild(row)})}
-async function refresh(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();const addresses=s.fixture_addresses||[];renderFixtureMeters(addresses);$('pattern').value=s.controls.pattern;$('behaviorTrigger').value=s.controls.behavior_trigger;renderMode();$('triggerDivision').value=String(s.controls.trigger_division);$('cycleLayout').value=s.controls.cycle_layout;$('chaseDirection').value=s.controls.chase_direction;$('chaseColor').value=s.controls.chase_color;$('chaseStrobe').checked=s.controls.chase_strobe;$('spotlightOverlay').checked=s.controls.spotlight_overlay;$('chaseSpeed').value=s.controls.chase_speed;$('chaseSpeedValue').textContent=Number(s.controls.chase_speed).toFixed(1)+'×';$('audioEnabled').checked=s.controls.audio_enabled;$('sensitivity').disabled=!s.controls.audio_enabled;$('cycleSpeed').value=s.controls.cycle_speed;$('cycleSpeedValue').textContent=Number(s.controls.cycle_speed).toFixed(2)+' s';document.querySelectorAll('#cycleColors input').forEach(input=>input.checked=s.controls.cycle_colors.includes(input.value));$('brightness').value=Math.round(s.controls.brightness*100);$('brightnessValue').textContent=Math.round(s.controls.brightness*100)+'%';$('sensitivity').value=Math.round(s.controls.sensitivity*100);$('sensitivityValue').textContent=s.controls.sensitivity.toFixed(2)+'×';for(let i=0;i<addresses.length;i++){const input=s.controls.spotlight_inputs[i],level=input?Math.round(s.vocal[input-1]*100):0,sourceName=!input?'No spotlight':input<=16?`Input ${input}`:input<=22?`Aux ${input-16}`:`Main ${input===23?'L':'R'}`;$('source'+i).textContent=`DMX d${String(addresses[i]).padStart(3,'0')} · ${sourceName}`;$('v'+i).style.width=level+'%';$('v'+i+'t').textContent=level+'%'}const band=Math.round(s.band*100);$('band').style.width=band+'%';$('bandt').textContent=band+'%';const live=s.meter_age!==null&&s.meter_age<1.5;$('meterState').innerHTML='<i class="dot '+(live?'ok':'')+'"></i>'+(live?'Live':'No meter data');$('detail').textContent=`${addresses.length} fixtures · DMX updates ${s.dmx_frames} · tempo ${s.tempo_bpm?Math.round(s.tempo_bpm)+' BPM':'—'} · last error: ${s.error||'none'}`}catch(e){$('meterState').innerHTML='<i class="dot"></i>Panel disconnected'}}
-refresh();setInterval(refresh,1000);
+async function loadInputNames(){try{const r=await fetch('/api/input-names',{cache:'no-store'}),j=await r.json();inputNames=j.names||{}}catch(e){inputNames={}}}
+async function refresh(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();const addresses=s.fixture_addresses||[];renderFixtureMeters(addresses);$('pattern').value=s.controls.pattern;$('behaviorTrigger').value=s.controls.behavior_trigger;renderMode();$('triggerDivision').value=String(s.controls.trigger_division);$('cycleLayout').value=s.controls.cycle_layout;$('chaseDirection').value=s.controls.chase_direction;$('chaseColor').value=s.controls.chase_color;$('chaseStrobe').checked=s.controls.chase_strobe;$('spotlightOverlay').checked=s.controls.spotlight_overlay;$('chaseSpeed').value=s.controls.chase_speed;$('chaseSpeedValue').textContent=Number(s.controls.chase_speed).toFixed(1)+'×';$('audioEnabled').checked=s.controls.audio_enabled;$('sensitivity').disabled=!s.controls.audio_enabled;$('cycleSpeed').value=s.controls.cycle_speed;$('cycleSpeedValue').textContent=Number(s.controls.cycle_speed).toFixed(2)+' s';document.querySelectorAll('#cycleColors input').forEach(input=>input.checked=s.controls.cycle_colors.includes(input.value));$('brightness').value=Math.round(s.controls.brightness*100);$('brightnessValue').textContent=Math.round(s.controls.brightness*100)+'%';$('sensitivity').value=Math.round(s.controls.sensitivity*100);$('sensitivityValue').textContent=s.controls.sensitivity.toFixed(2)+'×';for(let i=0;i<addresses.length;i++){const input=s.controls.spotlight_inputs[i],level=input?Math.round(s.vocal[input-1]*100):0,sourceName=!input?'No spotlight':input<=16?(inputNames[input]?`${inputNames[input]} (Input ${input})`:`Input ${input}`):input<=22?`Aux ${input-16}`:`Main ${input===23?'L':'R'}`;$('source'+i).textContent=`DMX d${String(addresses[i]).padStart(3,'0')} · ${sourceName}`;$('v'+i).style.width=level+'%';$('v'+i+'t').textContent=level+'%'}const band=Math.round(s.band*100);$('band').style.width=band+'%';$('bandt').textContent=band+'%';const live=s.meter_age!==null&&s.meter_age<1.5;$('meterState').innerHTML='<i class="dot '+(live?'ok':'')+'"></i>'+(live?'Live':'No meter data');$('detail').textContent=`${addresses.length} fixtures · DMX updates ${s.dmx_frames} · tempo ${s.tempo_bpm?Math.round(s.tempo_bpm)+' BPM':'—'} · last error: ${s.error||'none'}`}catch(e){$('meterState').innerHTML='<i class="dot"></i>Panel disconnected'}}
+loadInputNames().then(refresh);setInterval(refresh,1000);setInterval(loadInputNames,60000);
 </script></body></html>'''
 
 SETTINGS_HTML = r'''<!doctype html>
@@ -995,19 +1026,21 @@ SETTINGS_HTML = r'''<!doctype html>
 </style></head><body>
 <a href="/settings">← Settings</a><nav class="settings-tabs"><a class="active" href="/settings/fixtures">Fixtures</a><a href="/settings/audio">Audio</a></nav><h1>Fixtures</h1><p class="sub">Configure fixture count, spotlight sources, and band assignments.</p>
 <section class="card"><h2>Fixtures</h2><label><div class="source-label">Number of fixtures</div><select id="fixtureCount"></select></label><p class="hint">Fixtures use the current seven-channel RGB layout and get sequential DMX start addresses: d001, d008, d015, d022, and so on. Up to 73 fit in one DMX universe.</p><p class="hint">A spotlight source creates a white spotlight when its meter exceeds the trigger threshold.</p><div id="fixtures"></div></section>
-<section class="card"><h2>Band assignment</h2><label class="band-mode"><input id="bandAuto" type="checkbox"><span>Automatically use inputs not assigned as spotlights</span></label><div id="bandChannels" class="channel-grid"></div><p class="hint">When automatic is on, spotlight inputs are excluded from the band group. Turn it off to choose the band inputs yourself.</p></section>
+<section class="card"><h2>Band assignment</h2><button class="secondary" id="refreshNames">Refresh mixer input names</button><p class="hint" id="nameStatus">Input names are read from the XR/MR18 over OSC when this page opens.</p><label class="band-mode"><input id="bandAuto" type="checkbox"><span>Automatically use inputs not assigned as spotlights</span></label><div id="bandChannels" class="channel-grid"></div><p class="hint">When automatic is on, spotlight inputs are excluded from the band group. Turn it off to choose the band inputs yourself.</p></section>
 <p class="hint">Turning a fixture off blacks it out. Set Spotlight source to Off to keep its ambient color but remove its white meter response. Settings are saved on the Pi and survive app restarts.</p><div class="toast" id="toast">Loading settings…</div>
 <script>
-const MAX_FIXTURES=73,$=id=>document.getElementById(id);let enabled=[],sources=[],bandMode='auto',bandInputs=[];
+const MAX_FIXTURES=73,$=id=>document.getElementById(id);let enabled=[],sources=[],bandMode='auto',bandInputs=[],inputNames={};function escapeHtml(value){return String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]))}function inputLabel(input){return inputNames[input]?`${escapeHtml(inputNames[input])} · Input ${input}`:`Input ${input}`}
 for(let count=1;count<=MAX_FIXTURES;count++)$('fixtureCount').add(new Option(String(count),String(count)));
 function automaticBandInputs(){const spotlight=new Set(sources.filter(value=>value>0));return Array.from({length:16},(_,i)=>i+1).filter(input=>!spotlight.has(input))}
 async function post(values,message){try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent=message}catch(e){$('toast').textContent='Could not save settings: '+e.message}}
 function saveFixtures(){return post({fixture_count:enabled.length,fixture_enabled:enabled,spotlight_inputs:sources,band_mode:bandMode,band_inputs:bandInputs},'Fixture settings saved on the Pi')}
-function renderFixtures(){const root=$('fixtures');root.innerHTML='';const sourceOptions='<option value="0">Off</option><optgroup label="Inputs">'+Array.from({length:16},(_,n)=>`<option value="${n+1}">Input ${n+1}</option>`).join('')+'</optgroup><optgroup label="Aux outputs">'+Array.from({length:6},(_,n)=>`<option value="${17+n}">Aux ${n+1}</option>`).join('')+'</optgroup><optgroup label="Main outputs"><option value="23">Main L</option><option value="24">Main R</option></optgroup>';for(let i=0;i<enabled.length;i++){const address=1+i*7,row=document.createElement('div');row.className='fixture';row.innerHTML=`<label class="enable"><input type="checkbox" data-enable="${i}" ${enabled[i]?'checked':''}><span><span class="fixture-title">Fixture ${i+1}</span><span class="fixture-address">DMX d${String(address).padStart(3,'0')}</span></span></label><label><div class="source-label">Spotlight source</div><select data-source="${i}">${sourceOptions}</select></label>`;root.appendChild(row);row.querySelector('[data-source]').value=sources[i]}root.querySelectorAll('[data-enable]').forEach(el=>el.onchange=()=>{enabled[Number(el.dataset.enable)]=el.checked;saveFixtures()});root.querySelectorAll('[data-source]').forEach(el=>el.onchange=()=>{sources[Number(el.dataset.source)]=Number(el.value);if(bandMode==='auto')renderBandInputs();saveFixtures()})}
-function renderBandInputs(){const automatic=bandMode==='auto',selected=automatic?automaticBandInputs():bandInputs,root=$('bandChannels');root.innerHTML='';$('bandAuto').checked=automatic;for(let input=1;input<=16;input++){const label=document.createElement('label');label.className='channel';label.innerHTML=`<input type="checkbox" value="${input}" ${selected.includes(input)?'checked':''} ${automatic?'disabled':''}><span>Input ${input}</span>`;label.querySelector('input').onchange=()=>{bandInputs=Array.from(root.querySelectorAll('input:checked')).map(item=>Number(item.value));bandMode='custom';renderBandInputs();saveFixtures()};root.appendChild(label)}}
+function renderFixtures(){const root=$('fixtures');root.innerHTML='';const sourceOptions='<option value="0">Off</option><optgroup label="Inputs">'+Array.from({length:16},(_,n)=>`<option value="${n+1}">${inputLabel(n+1)}</option>`).join('')+'</optgroup><optgroup label="Aux outputs">'+Array.from({length:6},(_,n)=>`<option value="${17+n}">Aux ${n+1}</option>`).join('')+'</optgroup><optgroup label="Main outputs"><option value="23">Main L</option><option value="24">Main R</option></optgroup>';for(let i=0;i<enabled.length;i++){const address=1+i*7,row=document.createElement('div');row.className='fixture';row.innerHTML=`<label class="enable"><input type="checkbox" data-enable="${i}" ${enabled[i]?'checked':''}><span><span class="fixture-title">Fixture ${i+1}</span><span class="fixture-address">DMX d${String(address).padStart(3,'0')}</span></span></label><label><div class="source-label">Spotlight source</div><select data-source="${i}">${sourceOptions}</select></label>`;root.appendChild(row);row.querySelector('[data-source]').value=sources[i]}root.querySelectorAll('[data-enable]').forEach(el=>el.onchange=()=>{enabled[Number(el.dataset.enable)]=el.checked;saveFixtures()});root.querySelectorAll('[data-source]').forEach(el=>el.onchange=()=>{sources[Number(el.dataset.source)]=Number(el.value);if(bandMode==='auto')renderBandInputs();saveFixtures()})}
+function renderBandInputs(){const automatic=bandMode==='auto',selected=automatic?automaticBandInputs():bandInputs,root=$('bandChannels');root.innerHTML='';$('bandAuto').checked=automatic;for(let input=1;input<=16;input++){const label=document.createElement('label');label.className='channel';label.innerHTML=`<input type="checkbox" value="${input}" ${selected.includes(input)?'checked':''} ${automatic?'disabled':''}><span>${inputLabel(input)}</span>`;label.querySelector('input').onchange=()=>{bandInputs=Array.from(root.querySelectorAll('input:checked')).map(item=>Number(item.value));bandMode='custom';renderBandInputs();saveFixtures()};root.appendChild(label)}}
 $('fixtureCount').onchange=()=>{const count=Number($('fixtureCount').value);enabled=Array.from({length:count},(_,i)=>enabled[i]??true);sources=Array.from({length:count},(_,i)=>sources[i]??0);renderFixtures();renderBandInputs();saveFixtures()};
 $('bandAuto').onchange=()=>{if($('bandAuto').checked)bandMode='auto';else{if(bandMode==='auto'&&bandInputs.length===0)bandInputs=automaticBandInputs();bandMode='custom'}renderBandInputs();saveFixtures()};
-async function load(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();enabled=s.controls.fixture_enabled;sources=s.controls.spotlight_inputs;bandMode=s.controls.band_mode||'auto';bandInputs=s.controls.band_inputs||[];$('fixtureCount').value=s.controls.fixture_count;renderFixtures();renderBandInputs();$('toast').textContent='Ready'}catch(e){$('toast').textContent='Could not load settings: '+e.message}}
+async function loadNames(force=false){try{const r=await fetch(force?'/api/input-names/refresh':'/api/input-names',{method:force?'POST':'GET',cache:'no-store'}),j=await r.json();inputNames=j.names||{};renderFixtures();renderBandInputs();$('nameStatus').textContent=Object.keys(inputNames).length?`Loaded ${Object.keys(inputNames).length} named inputs from the mixer.`:'Mixer returned no input names; showing channel numbers.'}catch(e){$('nameStatus').textContent='Could not read mixer names; showing channel numbers.'}}
+$('refreshNames').onclick=async()=>{const button=$('refreshNames');button.disabled=true;await loadNames(true);button.disabled=false};
+async function load(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();enabled=s.controls.fixture_enabled;sources=s.controls.spotlight_inputs;bandMode=s.controls.band_mode||'auto';bandInputs=s.controls.band_inputs||[];$('fixtureCount').value=s.controls.fixture_count;await loadNames();renderFixtures();renderBandInputs();$('toast').textContent='Ready'}catch(e){$('toast').textContent='Could not load settings: '+e.message}}
 load();
 </script></body></html>'''
 
@@ -1107,27 +1140,10 @@ def start_control_panel(controller):
         if source_ip is None:
             return jsonify(error="Enter a valid mixer IPv4 address"), 400
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-                probe.bind(("0.0.0.0", 0))
-                probe.settimeout(0.12)
-                for channel in range(1, INPUT_CHANNEL_COUNT + 1):
-                    path = f"/ch/{channel:02d}/config/name"
-                    probe.sendto(osc_string(path) + osc_string(","), (source_ip, XR18_PORT))
-                deadline = time.monotonic() + 1.0
-                labels = {}
-                while time.monotonic() < deadline:
-                    try:
-                        response, sender = probe.recvfrom(2048)
-                    except socket.timeout:
-                        continue
-                    if sender[0] != source_ip:
-                        continue
-                    parsed = parse_osc_string_message(response)
-                    if parsed:
-                        address, label = parsed
-                        match = re.fullmatch(r"/ch/(\d{2})/config/name", address)
-                        if match:
-                            labels[int(match.group(1))] = label.strip()
+            labels = read_mixer_input_names(source_ip)
+            controller.input_names = labels
+            controller.input_names_ip = source_ip
+            controller.input_names_read_at = time.monotonic()
             candidates = []
             for channel, label in labels.items():
                 normalized = re.sub(r"[^a-z0-9]+", " ", label.lower()).strip()
@@ -1141,6 +1157,30 @@ def start_control_panel(controller):
             return jsonify(input=channel, label=label)
         except OSError as exc:
             return jsonify(error=f"Could not read mixer channel names: {type(exc).__name__}: {exc}"), 502
+
+    @app.get("/api/input-names")
+    def panel_input_names():
+        source_ip = controller.controls["osc_ip"]
+        now = time.monotonic()
+        if controller.input_names_ip != source_ip or now - controller.input_names_read_at > 60:
+            try:
+                controller.input_names = read_mixer_input_names(source_ip)
+                controller.input_names_ip = source_ip
+                controller.input_names_read_at = time.monotonic()
+            except OSError as exc:
+                return jsonify(names=controller.input_names, error=f"Could not read mixer input names: {type(exc).__name__}: {exc}"), 200
+        return jsonify(names=controller.input_names, refreshed_at=controller.input_names_read_at)
+
+    @app.post("/api/input-names/refresh")
+    def panel_refresh_input_names():
+        source_ip = controller.controls["osc_ip"]
+        try:
+            controller.input_names = read_mixer_input_names(source_ip)
+            controller.input_names_ip = source_ip
+            controller.input_names_read_at = time.monotonic()
+        except OSError as exc:
+            return jsonify(error=f"Could not read mixer input names: {type(exc).__name__}: {exc}"), 502
+        return jsonify(names=controller.input_names, refreshed_at=controller.input_names_read_at)
 
     @app.get("/api/status")
     def panel_status():
