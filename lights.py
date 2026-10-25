@@ -108,6 +108,7 @@ DEFAULT_CONTROLS = {
     "behavior_trigger": "timer",
     "trigger_division": 1,
     "tempo_input": 0,
+    "kick_sensitivity": 1.0,
     "kick_influence": 0.0,
     "spotlight_overlay": True,
     "chase_direction": "forward",
@@ -301,6 +302,9 @@ def load_control_settings():
             tempo_input = saved.get("tempo_input", controls["tempo_input"])
             if type(tempo_input) is int and 0 <= tempo_input <= INPUT_CHANNEL_COUNT:
                 controls["tempo_input"] = tempo_input
+            kick_sensitivity = float(saved.get("kick_sensitivity", controls["kick_sensitivity"]))
+            if 0.5 <= kick_sensitivity <= 2.0:
+                controls["kick_sensitivity"] = kick_sensitivity
             kick_influence = float(saved.get("kick_influence", controls["kick_influence"]))
             if 0.0 <= kick_influence <= 1.0:
                 controls["kick_influence"] = kick_influence
@@ -829,7 +833,7 @@ class LightingController:
         """Estimate tempo from transient intervals on the selected kick input."""
         if not self.controls["audio_enabled"] or not self.controls["tempo_input"]:
             return
-        sensitivity_db = 12.0 * math.log2(self.controls["sensitivity"])
+        sensitivity_db = 12.0 * math.log2(self.controls["kick_sensitivity"])
         level = clean_vu(int(meter_value + sensitivity_db * 256.0))
         if level <= TEMPO_RELEASE_LEVEL:
             self.tempo_armed = True
@@ -1115,18 +1119,19 @@ AUDIO_SETTINGS_HTML = r'''<!doctype html>
 <style>:root{color-scheme:dark;font:17px system-ui,-apple-system,sans-serif;background:#10131b;color:#f3f5fa}*{box-sizing:border-box}body{margin:0 auto;max-width:760px;padding:22px 18px 40px}a{color:#91caff;text-decoration:none;font-weight:650;display:inline-flex;align-items:center;min-height:44px}.settings-tabs{display:flex;gap:8px;margin:8px 0 14px}.settings-tabs a{padding:8px 14px;border:1px solid #46516a;border-radius:12px}.settings-tabs a.active{background:#252d3d;color:#fff}h1{font-size:27px;margin:8px 0 5px}.sub,.hint{color:#aeb6c7;line-height:1.5}.card{background:#1b202c;border:1px solid #30384a;border-radius:18px;padding:16px;margin:14px 0}.setting-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end}.source-label{font-size:13px;color:#aeb6c7;margin-bottom:5px}select,button,input[type=text]{font:inherit;color:inherit;background:#252d3d;border:1px solid #46516a;border-radius:12px;padding:12px 13px}select,input[type=text]{width:100%;min-height:52px}button{min-height:52px;font-weight:700;cursor:pointer}.hint{font-size:14px}.toast{min-height:24px;color:#9bc9ff;font-size:14px;margin:8px 0}@media(max-width:500px){body{padding:16px 12px}.card{padding:12px}.setting-row{grid-template-columns:1fr}}</style></head><body>
 <a href="/settings">← Settings</a><nav class="settings-tabs"><a href="/settings/fixtures">Fixtures</a><a class="active" href="/settings/audio">Audio</a></nav><h1>Audio</h1><p class="sub">Set the mixer IP address used for audio metering.</p><p><a href="/settings/audio/help">OSC setup help →</a></p>
 <section class="card"><h2>OSC audio source</h2><p class="hint">Works with Behringer XR18 and Midas MR18. Both use the same OSC meter connection.</p><label><div class="source-label">Mixer IP address</div><input id="oscIp" type="text" inputmode="decimal" autocomplete="off" placeholder="192.168.0.18"></label><p class="hint">The controller subscribes to the selected console’s OSC meter streams on UDP port 10024.</p><div class="action-row"><button class="secondary" id="testConnection">Test connection</button><button id="saveSource">Save audio source</button></div></section>
-<section class="card"><h2>Kick input for beat sync</h2><p class="hint">Choose an input with a clear kick drum signal. If the mixer channel is named “Kick” in its scribble strip, Find Kick can detect it automatically.</p><label><div class="source-label">Kick meter input</div><select id="tempoInput"><option value="0">Off</option></select></label><div class="action-row"><button class="secondary" id="findKick">Find Kick</button><button class="secondary" id="refreshKickNames">Refresh input names</button></div><p class="hint" id="kickNameStatus">Loading names from mixer…</p><p class="hint">Beat sync estimates tempo from repeated meter peaks. Channel-name lookup reads the XR/MR18 input names over OSC.</p></section>
+<section class="card"><h2>Kick input for beat sync</h2><p class="hint">Choose an input with a clear kick drum signal. If the mixer channel is named “Kick” in its scribble strip, Find Kick can detect it automatically.</p><label><div class="source-label">Kick meter input</div><select id="tempoInput"><option value="0">Off</option></select></label><div class="action-row"><button class="secondary" id="findKick">Find Kick</button><button class="secondary" id="refreshKickNames">Refresh input names</button></div><p class="hint" id="kickNameStatus">Loading names from mixer…</p><div class="label"><span>Kick beat-sync sensitivity</span><span class="value" id="kickSensitivityValue">1.00×</span></div><input id="kickSensitivity" type="range" min="50" max="200" value="100" aria-label="Kick beat-sync sensitivity"><p class="hint">Adjust how strongly the selected kick meter triggers beat detection. This setting is independent of audio sensitivity and Spotlight’s Band ↔ Kick influence.</p><p class="hint">Beat sync estimates tempo from repeated meter peaks. Channel-name lookup reads the XR/MR18 input names over OSC.</p></section>
 <div class="toast" id="toast">Loading settings…</div>
 <script>
 const $=id=>document.getElementById(id);
 function populateKickInputs(names,selected){const select=$('tempoInput');select.innerHTML='';select.add(new Option('Off','0'));for(let i=1;i<=16;i++){const label=names[i]||`Input ${i}`;select.add(new Option(`${label} · Input ${i}`,String(i)))}select.value=String(selected||0)}
 async function loadKickNames(force=false,selected=Number($('tempoInput').value)){try{const r=await fetch(force?'/api/input-names/refresh':'/api/input-names',{method:force?'POST':'GET',cache:'no-store'}),j=await r.json();populateKickInputs(j.inputs||{},selected);const count=Object.keys(j.inputs||{}).length;$('kickNameStatus').textContent=count?`Loaded ${count} mixer input names.`:'Mixer returned no input names; showing channel numbers.'}catch(e){populateKickInputs({},selected);$('kickNameStatus').textContent='Could not read mixer names; showing channel numbers.'}}
 for(let i=1;i<=16;i++)$('tempoInput').add(new Option(`Input ${i}`,String(i)));
-async function load(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();$('oscIp').value=s.controls.osc_ip;$('tempoInput').value=String(s.controls.tempo_input||0);$('toast').textContent='Ready';loadKickNames(false,s.controls.tempo_input||0)}catch(e){$('toast').textContent='Could not load settings: '+e.message}}
+async function load(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();$('oscIp').value=s.controls.osc_ip;$('tempoInput').value=String(s.controls.tempo_input||0);$('kickSensitivity').value=String(Math.round(s.controls.kick_sensitivity*100));$('kickSensitivityValue').textContent=s.controls.kick_sensitivity.toFixed(2)+'×';$('toast').textContent='Ready';loadKickNames(false,s.controls.tempo_input||0)}catch(e){$('toast').textContent='Could not load settings: '+e.message}}
 $('refreshKickNames').onclick=async()=>{const button=$('refreshKickNames');button.disabled=true;await loadKickNames(true);button.disabled=false};
 $('testConnection').onclick=async()=>{const button=$('testConnection');button.disabled=true;$('toast').textContent='Testing OSC connection…';try{const r=await fetch('/api/test-osc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({osc_ip:$('oscIp').value.trim()})}),j=await r.json();if(!r.ok)throw Error(j.error||'Connection test failed');$('toast').textContent=`OSC reply received from ${j.osc_ip}`}catch(e){$('toast').textContent='Connection test failed: '+e.message}finally{button.disabled=false}};
 $('saveSource').onclick=async()=>{try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({osc_ip:$('oscIp').value.trim()})}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent='Audio source saved; reconnecting to the console'}catch(e){$('toast').textContent='Could not save audio settings: '+e.message}};
 $('tempoInput').onchange=async()=>{try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tempo_input:Number($('tempoInput').value)})}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent='Kick input saved'}catch(e){$('toast').textContent='Could not save kick input: '+e.message}};
+$('kickSensitivity').oninput=e=>{const value=Number(e.target.value)/100;$('kickSensitivityValue').textContent=value.toFixed(2)+'×';clearTimeout(window.kickSensitivityTimer);window.kickSensitivityTimer=setTimeout(async()=>{try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kick_sensitivity:value})}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent='Kick beat-sync sensitivity saved'}catch(e){$('toast').textContent='Could not save kick sensitivity: '+e.message}},180)};
 $('findKick').onclick=async()=>{const button=$('findKick');button.disabled=true;$('toast').textContent='Reading mixer channel names…';try{const r=await fetch('/api/find-kick',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({osc_ip:$('oscIp').value.trim()})}),j=await r.json();if(!r.ok)throw Error(j.error||'Kick not found');await loadKickNames(false,j.input);$('tempoInput').value=String(j.input);const saved=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tempo_input:j.input})}),result=await saved.json();if(!saved.ok)throw Error(result.error||'Could not save input');$('toast').textContent=`Found “${j.label}” on Input ${j.input}; beat sync is ready`}catch(e){$('toast').textContent=e.message}finally{button.disabled=false}};
 load();
 </script></body></html>'''
@@ -1273,7 +1278,7 @@ def start_control_panel(controller):
             "sensitivity", "audio_enabled", "brightness", "pattern",
             "cycle_colors", "cycle_speed", "fixture_count", "fixture_enabled",
             "spotlight_inputs", "band_mode", "band_inputs", "osc_model", "osc_ip",
-            "cycle_layout", "behavior_trigger", "trigger_division", "tempo_input",
+            "cycle_layout", "behavior_trigger", "trigger_division", "tempo_input", "kick_sensitivity",
             "kick_influence", "spotlight_overlay", "chase_direction", "chase_speed",
             "chase_color", "chase_strobe",
         }
@@ -1379,6 +1384,14 @@ def start_control_panel(controller):
                 if type(value) is not int or not 0 <= value <= INPUT_CHANNEL_COUNT:
                     return jsonify(error="tempo_input must be Off or Input 1–16"), 400
                 updated["tempo_input"] = value
+            if "kick_sensitivity" in data:
+                try:
+                    value = float(data["kick_sensitivity"])
+                except (TypeError, ValueError):
+                    return jsonify(error="Kick sensitivity must be a number"), 400
+                if not 0.5 <= value <= 2.0:
+                    return jsonify(error="Kick sensitivity must be between 0.50× and 2.00×"), 400
+                updated["kick_sensitivity"] = value
             if "kick_influence" in data:
                 try:
                     value = float(data["kick_influence"])
@@ -1420,7 +1433,7 @@ def start_control_panel(controller):
                 "audio_enabled", "pattern", "cycle_colors", "cycle_speed",
                 "fixture_count", "fixture_enabled", "spotlight_inputs",
                 "band_mode", "band_inputs", "osc_model", "osc_ip",
-                "cycle_layout", "behavior_trigger", "trigger_division", "tempo_input",
+                "cycle_layout", "behavior_trigger", "trigger_division", "tempo_input", "kick_sensitivity",
                 "kick_influence", "spotlight_overlay", "chase_direction", "chase_speed",
                 "chase_color", "chase_strobe",
             }
