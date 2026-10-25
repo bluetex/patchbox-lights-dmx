@@ -27,7 +27,7 @@ just a convenient remote control.
   to groups of that size.
 - **Blackout** — a toggle that blanks the fixtures and then returns to the
   selected lighting mode when switched off.
-- **Audio controls** — set overall brightness and sensitivity, tune band and
+- **Audio controls** — set sensitivity, tune band and
   kick response, choose a kick input, and decide whether meter-driven white
   spotlights may overlay Color cycle effects.
 - **Fixture setup** — add fixtures, disable individual fixtures, and assign
@@ -38,6 +38,11 @@ Spotlight assignments matter in Spotlight mode. In Color cycle mode they are
 used only when the white spotlight overlay is enabled, including when the
 Chase behavior is selected. Band inputs are listed on the Fixtures page; their
 selection and sensitivity controls live in Audio settings.
+
+**Brightness is mode-specific:** Spotlight mode has separate sliders for white
+spotlights and colored Band / ambient lights. Color cycle and Chase share an
+effect-brightness slider. The white meter overlay setting is shown with those
+effects; it lets an assigned fixture briefly turn white on a meter peak.
 
 ## Bill of materials
 

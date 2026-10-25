@@ -148,6 +148,13 @@ hold deadline, and the rendered white-light envelope. Current constants are:
 | White release | 3.0 s | Tapers white after the target level falls |
 | Retrigger delta | 0.08 | Requires a material increase to refresh the captured peak |
 
+The rendered white envelope is multiplied by the independent
+`spotlight_brightness` master-dimmer value (0–1). In Spotlight mode, colored
+ambient/Band output instead uses `band_brightness`. These are separate DMX
+master-dimmer controls; the `brightness` control remains the master for Color
+cycle and Chase. A meter-triggered white overlay over Color cycle/Chase uses
+`spotlight_brightness` as well.
+
 Input channels feed the first 16 sources. `/meters/5` feeds the next eight.
 Only the selected spotlight source for each enabled fixture is rendered as
 white. Repeated higher peaks can refresh a hold; a lower signal at or below
@@ -214,6 +221,10 @@ combines band phase, kick beat phase, pair accents, and swell/dive gains. The
 engine changes this evolution after 32 detected band peaks. White meter
 spotlights take priority for their assigned fixtures when active.
 
+Spotlight mode exposes two independent brightness controls: white spotlight
+output uses `spotlight_brightness`, while its colored Band/ambient output uses
+`band_brightness`. The generic `brightness` value is not applied in this mode.
+
 ### Color cycle
 
 The user selects one or more named RGB colors. The timer trigger uses
@@ -228,6 +239,12 @@ timer-driven fades are capped at the configured seconds-per-color interval.
 The initial color and changes to cycle configuration start without an
 unrequested transition. Ambient palette intensity is 50% before master
 brightness.
+
+The control **Show white meter spotlights over Color cycle / Chase** is the
+`spotlight_overlay` boolean. When enabled, an assigned fixture's live white
+meter envelope temporarily replaces that fixture's cycle or chase color.
+Disabling it leaves the selected effect visible on every enabled fixture;
+Spotlight mode always uses the assigned meter sources.
 
 ### Chase behavior
 
@@ -319,7 +336,9 @@ settings are written to a temporary file and atomically replaced at
 | --- | --- | --- |
 | `sensitivity`, `band_sensitivity`, `kick_sensitivity` | Number, 0.5–2.0 | General sensitivity is runtime-only; band and kick sensitivity persist |
 | `audio_enabled` | Boolean | Yes |
-| `brightness` | Number, 0.0–1.0 | No |
+| `brightness` | Number, 0.0–1.0; Color cycle / Chase master | No |
+| `spotlight_brightness` | Number, 0.0–1.0; white fixtures | Yes |
+| `band_brightness` | Number, 0.0–1.0; Spotlight ambient fixtures | Yes |
 | `pattern` | `spotlight`, `color_cycle`; legacy `chase` maps to color-cycle Chase | Yes |
 | `blackout` | Boolean | Yes |
 | `fixture_count` | Integer, 1–73 | Yes |
@@ -344,9 +363,10 @@ settings are written to a temporary file and atomically replaced at
 | `chase_strobe` | Boolean | Yes |
 | `osc_model`, `osc_ip` | Supported model / valid IPv4 address | Yes |
 
-Runtime-only controls include brightness and general sensitivity. If a control
-does not persist, check the server response and whether the Pi service account
-can write the settings file.
+Runtime-only controls include Color cycle / Chase brightness and general
+sensitivity. Spotlight white and Band brightness persist. If a control does
+not persist, check the server response and whether the Pi service account can
+write the settings file.
 
 ## Configuration and state
 
