@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+venv/
+*.log
+control_settings.json
+control_settings.json.tmp
+
+# Historical snapshots kept locally; lights.py is the maintained app.
+lights.py.remote
+lights_input16_current.py
+lights_panel_current.py

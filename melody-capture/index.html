@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f1e9">
+  <title>Melody Capture</title>
+  <style>
+    :root { color-scheme: light; --ink:#20231f; --muted:#72776f; --paper:#f4f1e9; --card:#fffdf8; --line:#ddd9cf; --green:#355e48; --lime:#d8ef9d; --coral:#da7357; }
+    * { box-sizing:border-box }
+    body { margin:0; background:var(--paper); color:var(--ink); font:16px/1.5 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif }
+    main { max-width:1050px; margin:0 auto; padding:48px 28px 72px }
+    header { display:flex; justify-content:space-between; align-items:flex-start; gap:24px; margin-bottom:32px }
+    .eyebrow { color:var(--green); font-size:12px; font-weight:750; letter-spacing:.16em; text-transform:uppercase }
+    h1 { margin:8px 0 8px; font:500 clamp(38px,7vw,66px)/.98 Georgia,serif; letter-spacing:-.045em }
+    header p { color:var(--muted); margin:0; max-width:510px }
+    .badge { border:1px solid var(--line); border-radius:999px; padding:8px 12px; font-size:12px; color:var(--muted); white-space:nowrap }
+    .layout { display:grid; grid-template-columns:320px 1fr; gap:18px; align-items:stretch }
+    .setup { margin-bottom:18px }
+    .setup-top { display:flex; justify-content:space-between; align-items:baseline; gap:18px; margin-bottom:18px }
+    .setup-fields { display:grid; grid-template-columns:1.25fr .8fr 1.2fr .85fr .9fr 1.1fr; gap:12px; align-items:end }
+    .field { display:flex; flex-direction:column; gap:6px; font-size:12px; font-weight:700; color:var(--muted) }
+    .field select,.field input { width:100%; min-height:42px; padding:8px 10px; border:1px solid var(--line); border-radius:9px; background:#fff; color:var(--ink); font:500 14px inherit }
+    .check-field { display:flex; gap:9px; align-items:center; min-height:42px; color:var(--ink); font-size:13px; font-weight:600 }
+    .check-field input { width:17px; height:17px; accent-color:var(--green) }
+    .custom-meter { display:flex; gap:8px; margin-top:10px; align-items:center; color:var(--muted); font-size:12px }
+    .custom-meter[hidden] { display:none }
+    .key-actions { display:flex; align-items:center; gap:10px; margin-top:12px }
+    .key-actions button { min-height:36px; padding:8px 12px; background:var(--green); color:white; font-size:12px }
+    .key-status { color:var(--muted); font-size:12px }
+    .custom-meter input,.custom-meter select { min-height:34px; padding:5px 8px; border:1px solid var(--line); border-radius:8px; background:white; font:inherit; color:var(--ink) }
+    .panel { border:1px solid var(--line); border-radius:18px; background:var(--card); padding:24px }
+    .capture { background:var(--green); border-color:var(--green); color:white; display:flex; flex-direction:column; min-height:410px }
+    .section-label { font-size:11px; font-weight:750; letter-spacing:.14em; text-transform:uppercase; opacity:.72 }
+    .pitch { margin:auto 0 10px; font:500 clamp(58px,8vw,88px)/1 Georgia,serif; letter-spacing:-.06em; min-height:96px }
+    .frequency { color:#d8e6d9; font-variant-numeric:tabular-nums; font-size:14px }
+    .beat-state { display:flex; align-items:center; gap:9px; color:#d8e6d9; font-size:13px; min-height:26px; margin-top:8px }
+    .beat-dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:#ffffff50; flex:0 0 auto }
+    .beat-number { color:var(--lime); font:600 19px/1 Georgia,serif; min-width:24px; text-align:center }
+    .beat-dot.pulse { background:var(--lime); animation:beat .24s ease-out }
+    @keyframes beat { 0%{transform:scale(1);box-shadow:0 0 0 0 #d8ef9d99} 50%{transform:scale(1.8);box-shadow:0 0 0 7px #d8ef9d22} 100%{transform:scale(1)} }
+    .meter { height:5px; background:#ffffff33; border-radius:4px; margin:18px 0 26px; overflow:hidden }
+    .meter span { display:block; height:100%; width:0; background:var(--lime); transition:width .12s }
+    .gate-row { margin:-10px 0 18px; color:#d8e6d9; font-size:12px; display:flex; align-items:center; gap:10px }
+    .gate-row label { display:flex; justify-content:space-between; gap:10px; width:100% }
+    .gate-row input { accent-color:var(--lime); width:100px }
+    .controls { display:grid; grid-template-columns:1fr 1fr; gap:9px }
+    button { border:0; border-radius:10px; padding:12px 14px; background:var(--lime); color:var(--ink); font:700 14px inherit; cursor:pointer; min-height:46px }
+    button.secondary { background:#ffffff1c; color:white; border:1px solid #ffffff40 }
+    button:disabled { opacity:.45; cursor:not-allowed }
+    .hint { color:#d8e6d9; font-size:12px; margin:16px 0 0 }
+    .score-panel { min-height:410px; display:flex; flex-direction:column }
+    .score-heading { display:flex; justify-content:space-between; gap:12px; align-items:center }
+    h2 { font:500 24px/1.2 Georgia,serif; margin:0 }
+    .count { color:var(--muted); font-size:13px }
+    .score-wrap { overflow-x:auto; margin:30px -8px 10px; flex:1; min-height:200px }
+    svg { display:block; min-width:100%; height:200px }
+    .empty { fill:var(--muted); font:14px ui-sans-serif,system-ui,sans-serif }
+    .score-note { color:var(--muted); font-size:13px; margin:0 }
+    .exports { display:flex; gap:9px; margin-top:18px }
+    .exports button { background:var(--ink); color:white }
+    .exports button:last-child { background:transparent; color:var(--ink); border:1px solid var(--line) }
+    .below { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-top:18px }
+    .below p { margin:8px 0 0; color:var(--muted); font-size:13px }
+    .note-list { display:flex; flex-wrap:wrap; gap:7px; margin-top:16px; max-height:102px; overflow:auto }
+    .chip { font-size:12px; padding:5px 9px; border-radius:999px; background:#eeece4; font-variant-numeric:tabular-nums }
+    a { color:var(--green) }
+    @media(max-width:760px) { main{padding:30px 16px 48px} header{display:block} .badge{display:inline-block;margin-top:18px} .layout,.below{grid-template-columns:1fr} .capture{min-height:350px} }
+    @media(max-width:760px) { .setup-fields{grid-template-columns:1fr 1fr} .setup-top{display:block} }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><div class="eyebrow">A small tool for musical ideas</div><h1>Melody Capture</h1><p>Sing or play a single melodic line. See the notes appear, then take the melody into your notation or music software.</p></div>
+    <div class="badge">Prototype · runs in your browser</div>
+  </header>
+  <section class="panel setup" aria-label="Take setup">
+    <div class="setup-top"><div><div class="section-label">Before you play</div><h2 style="margin-top:6px">Set the pulse</h2></div><span class="count">Choose a meter, tempo, and key for your count-in and exports.</span></div>
+    <div class="setup-fields">
+      <label class="field" for="meter-select">Time signature
+        <select id="meter-select"><option value="2/4">2/4</option><option value="3/4">3/4</option><option value="4/4" selected>4/4</option><option value="5/4">5/4</option><option value="6/8">6/8</option><option value="7/8">7/8</option><option value="custom">Other…</option></select>
+      </label>
+      <label class="field" for="tempo">Tempo (BPM)
+        <input id="tempo" type="number" min="40" max="240" step="1" value="100">
+      </label>
+      <label class="field" for="key-root">Key tonic
+        <select id="key-root"><option value="0">C</option><option value="1">C♯ / D♭</option><option value="2">D</option><option value="3">D♯ / E♭</option><option value="4">E</option><option value="5">F</option><option value="6">F♯ / G♭</option><option value="7">G</option><option value="8">G♯ / A♭</option><option value="9">A</option><option value="10">A♯ / B♭</option><option value="11">B</option></select>
+      </label>
+      <label class="field" for="key-mode">Mode
+        <select id="key-mode"><option value="major" selected>Major</option><option value="minor">Minor</option></select>
+      </label>
+      <label class="field" for="count-bars">Count-in
+        <select id="count-bars"><option value="1" selected>1 bar</option><option value="2">2 bars</option></select>
+      </label>
+      <label class="check-field" for="click-enabled"><input id="click-enabled" type="checkbox" checked> Play an audio click</label>
+    </div>
+    <div class="key-actions"><button id="hum-key" type="button">Set key by humming</button><span class="key-status" id="key-status" aria-live="polite">Selected key: C major · follow the 1–2–3–4 count-in, then sing do–mi–sol–mi–do–sol–do with the click.</span></div>
+    <div class="custom-meter" id="custom-meter" hidden><span>Other meter:</span><input id="custom-beats" type="number" min="1" max="12" value="4" aria-label="Beats per bar"><span>beats per</span><select id="custom-unit" aria-label="Beat note value"><option value="2">half note</option><option value="4" selected>quarter note</option><option value="8">eighth note</option><option value="16">sixteenth note</option></select></div>
+  </section>
+  <section class="layout">
+    <div class="panel capture">
+      <div class="section-label">Listening for a note</div>
+      <div id="pitch" class="pitch">—</div>
+      <div id="frequency" class="frequency">Allow microphone access to begin</div>
+      <div class="beat-state" aria-live="polite"><span id="beat-dot" class="beat-dot"></span><span id="beat-number" class="beat-number"></span><span id="beat-state">Ready · start listening for count-in</span></div>
+      <div class="meter"><span id="meter"></span></div>
+      <div class="gate-row"><label for="gate">Noise gate <input id="gate" type="range" min="0.01" max="0.10" step="0.005" value="0.015"><span id="gate-value">0.015</span></label></div>
+      <div class="controls"><button id="listen">Start listening</button><button id="stop" class="secondary" disabled>Finish take</button><button id="clear" class="secondary">Clear notes</button></div>
+      <p class="hint">Starting the mic starts the take automatically. Play or sing one note at a time. Audio is processed locally and is not uploaded.</p>
+    </div>
+    <div class="panel score-panel">
+      <div class="score-heading"><h2 id="staff-title">Treble staff</h2><span id="count" class="count">No notes yet</span></div>
+      <div class="score-wrap"><svg id="score" viewBox="0 0 760 200" role="img" aria-label="Transcribed melody on a treble staff"></svg></div>
+      <p class="score-note">The staff clef follows the detected pitch range. Exported rhythm is approximate; review the score in your notation editor.</p>
+      <div class="exports"><button id="midi" disabled>Download MIDI</button><button id="xml" disabled>Download MusicXML</button></div>
+    </div>
+  </section>
+  <section class="below">
+    <div class="panel"><div class="section-label">This take</div><h2 style="margin-top:8px">Detected notes</h2><div id="notes" class="note-list"><span class="score-note">Your recorded notes will appear here.</span></div></div>
+    <div class="panel"><div class="section-label">About the prototype</div><h2 style="margin-top:8px">One melody at a time</h2><p>This first version estimates the strongest pitch from the microphone. It is suited to humming or a single instrument, not chords or a full mixed song. Pitch detection is approximate; a later version can add audio-file import, better rhythm inference, and polyphonic transcription.</p></div>
+  </section>
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const pitchEl=$('pitch'), freqEl=$('frequency'), meterEl=$('meter'), score=$('score');
+  const names=['C','C♯','D','E♭','E','F','F♯','G','A♭','A','B♭','B'];
+  const keyNames=['C','C♯/D♭','D','D♯/E♭','E','F','F♯/G♭','G','G♯/A♭','A','A♯/B♭','B'];
+  const majorFifths=[0,7,2,-3,4,-1,6,1,-4,3,-2,5],minorFifths=[-3,4,-1,-6,1,-4,3,-2,5,0,-5,2];
+  const letterForPitch=[0,0,1,1,2,3,3,4,4,5,5,6], letterNames=['C','D','E','F','G','A','B'];
+  const clefs=[
+    {name:'Treble',symbol:'𝄞',sign:'G',line:2,bottom:4*7+2},
+    {name:'Bass',symbol:'𝄢',sign:'F',line:4,bottom:2*7+4},
+    {name:'Alto',symbol:'𝄡',sign:'C',line:3,bottom:3*7+3},
+    {name:'Tenor',symbol:'𝄡',sign:'C',line:4,bottom:3*7+1}
+  ];
+  let ctx, analyser, source, stream, raf, recording=false, active=null, candidate=null, candidateSince=0, silentSince=0, notes=[], pitchTrace=[], lastRender=0, lastFrame=0, inputGate=0.015,pitchHistory=[];
+  let beatTimer=null,keyChordTimeout=null,nextBeatAt=0,countInIndex=0,countInTotal=0,beatDuration=0,takeSettings={bpm:100,beats:4,unit:4},musicBeatIndex=0,recordingStartAt=0;
+  // Pitch is a median of five frames sampled every 20 ms. A pitch transition
+  // therefore appears about two frames late; compensate for that filter lag
+  // as well as the analysis window's center offset.
+  const timingCompensation=0.085;
+  let humCtx=null,humStream=null,humAnalyser=null,humRaf=null,humBeatTimer=null,humNextBeatAt=0,humBeatIndex=0,humCandidate=null,humSince=0,humStarted=0,humLastRecordedClass=null,humSequence=[];
+  function selectedKey(){const root=Number($('key-root').value),mode=$('key-mode').value,signature=(mode==='minor'?minorFifths:majorFifths)[root];return {root,mode,signature,name:`${keyNames[root]} ${mode}`}}
+  function updateKeyStatus(message){$('key-status').textContent=message||`Selected key: ${selectedKey().name}`}
+  function pitchToKey(rawMidi,preferTonic=false) {
+    const {root,mode}=selectedKey(),scale=mode==='minor'?[0,2,3,5,7,8,10]:[0,2,4,5,7,9,11];
+    if(preferTonic){
+      const tonic=12*Math.round((rawMidi-root)/12)+root;
+      if(Math.abs(rawMidi-tonic)<=0.85)return tonic;
+    }
+    let best=Math.round(rawMidi),bestCost=Infinity;
+    for(let midi=Math.floor(rawMidi)-2;midi<=Math.ceil(rawMidi)+2;midi++){
+      if(!scale.includes(((midi-root)%12+12)%12))continue;
+      let cost=Math.abs(rawMidi-midi);
+      if(midi%12===root)cost-=0.025;
+      if(cost<bestCost){bestCost=cost;best=midi}
+    }
+    return best;
+  }
+  const noteName = midi => `${names[((midi%12)+12)%12]}${Math.floor(midi/12)-1}`;
+  const diatonicPosition = midi => (Math.floor(midi/12)-1)*7+letterForPitch[((midi%12)+12)%12];
+  function chooseClef(sourceNotes) {
+    if(!sourceNotes.length)return clefs[0];
+    return clefs.map(clef=>{
+      const positions=sourceNotes.map(n=>diatonicPosition(n.midi)-clef.bottom).sort((a,b)=>a-b);
+      const median=positions[Math.floor(positions.length/2)];
+      const score=positions.reduce((sum,pos)=>{const outside=pos<0?-pos:pos>8?pos-8:0;return sum+outside*outside*10+Math.abs(pos-4)*.15},0)/positions.length+Math.abs(median-4)*.35;
+      return {clef,score};
+    }).sort((a,b)=>a.score-b.score)[0].clef;
+  }
+  function estimatePitch(buf, sr) {
+    // Decimate by two before comparing lags: this keeps the search responsive
+    // while retaining enough resolution for the vocal/instrument range.
+    const decimated=new Float32Array(buf.length>>1);
+    let rms=0; for(let i=0;i<decimated.length;i++){decimated[i]=(buf[i*2]+buf[i*2+1])*.5;rms+=decimated[i]*decimated[i]}
+    rms=Math.sqrt(rms/decimated.length); sr*=.5;
+    if(rms<inputGate) return {rms,hz:0};
+    const minLag=Math.floor(sr/1000), maxLag=Math.min(Math.floor(sr/65),decimated.length-2);
+    const difference=new Float32Array(maxLag+1), cmnd=new Float32Array(maxLag+1);
+    let running=0;
+    for(let lag=1;lag<=maxLag;lag++) {
+      let diff=0; for(let i=0;i<decimated.length-lag;i++){const d=decimated[i]-decimated[i+lag];diff+=d*d}
+      difference[lag]=diff; running+=diff; cmnd[lag]=running?diff*lag/running:1;
+    }
+    // Keep YIN conservative: a broad valley was accepting harmonic peaks as
+    // notes and producing octave-sized errors.
+    let best=0;
+    for(let lag=minLag;lag<=maxLag;lag++) {
+      if(cmnd[lag]<0.16){best=lag;while(best+1<=maxLag&&cmnd[best+1]<cmnd[best])best++;break}
+    }
+    if(!best) return {rms,hz:0};
+    const a=difference[best-1],b=difference[best],c=difference[best+1];
+    const shift=.5*(a-c)/(a-2*b+c);
+    return {rms,hz:sr/(best+(Number.isFinite(shift)?shift:0))};
+  }
+  function closeNote(time) {
+    if(active){
+      const end=Math.max(active.start+0.055,time-timingCompensation);
+      if(end-active.start>=0.055)notes.push({...active,end});
+      active=null;render();
+    }
+  }
+  function settleTake() {
+    if(!notes.length)return;
+    // Re-estimate each note from its stable middle, then quantize both edges
+    // against the first recording downbeat. The live detector remains useful
+    // for feedback, while this pass removes transient pitch wobble and timing
+    // jitter from the exported MIDI.
+    const quarterSeconds=60/takeSettings.bpm*4/takeSettings.unit;
+    const sixteenthSeconds=quarterSeconds/4;
+    const snap=time=>recordingStartAt+Math.round((time-recordingStartAt)/sixteenthSeconds)*sixteenthSeconds;
+    notes=notes.map((note,index)=>{
+      const duration=note.end-note.start,margin=Math.min(duration*.2,.06),from=note.start+margin,to=note.end-margin;
+      const pitches=pitchTrace.filter(frame=>frame.midi!==null&&frame.time>=from&&frame.time<=to).map(frame=>frame.midi).sort((a,b)=>a-b);
+      let midi=note.midi;
+      if(pitches.length){const center=pitches[Math.floor(pitches.length/2)];midi=pitchToKey(center,index===0)}
+      const start=Math.max(recordingStartAt,snap(note.start));
+      const end=Math.max(start+sixteenthSeconds,snap(note.end));
+      return {midi,start,end};
+    });
+    notes.sort((a,b)=>a.start-b.start);
+    render();
+  }
+  function detect() {
+    if(!analyser)return;
+    const wallNow=performance.now();
+    if(wallNow-lastFrame<20){raf=requestAnimationFrame(detect);return}
+    lastFrame=wallNow;
+    const b=new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(b);
+    const {rms,hz:rawHz}=estimatePitch(b,ctx.sampleRate);
+    let hz=rawHz;
+    if(rawHz){pitchHistory.push(rawHz);if(pitchHistory.length>5)pitchHistory.shift();const ordered=[...pitchHistory].sort((a,b)=>a-b);hz=ordered[Math.floor(ordered.length/2)]}
+    else pitchHistory=[];
+    meterEl.style.width=`${Math.min(100,rms*420)}%`;
+    const now=ctx.currentTime,frameTime=now-analyser.fftSize/(2*ctx.sampleRate),rawMidi=hz?69+12*Math.log2(hz/440):null;
+    const instantMidi=rawHz?69+12*Math.log2(rawHz/440):null;
+    if(recording&&pitchTrace.length<30000)pitchTrace.push({time:frameTime,midi:instantMidi});
+    let midi=rawMidi===null?null:pitchToKey(rawMidi,!active&&notes.length===0);
+    // Hold the current/recent in-key pitch through modest flat/sharp drift,
+    // including repeated notes separated by a brief articulation gap.
+    const pitchAnchor=active?.midi??(notes.length?notes[notes.length-1].midi:null);
+    if(pitchAnchor!==null&&rawMidi!==null&&Math.abs(rawMidi-pitchAnchor)<=0.72)midi=pitchAnchor;
+    if(midi!==null && midi>=24 && midi<=96) {
+      pitchEl.textContent=noteName(midi); freqEl.textContent=`${hz.toFixed(1)} Hz · ${Math.round(1200*Math.log2(hz/(440*2**((midi-69)/12))))} cents from ${noteName(midi)}`;
+      silentSince=0;
+      if(midi!==candidate){candidate=midi;candidateSince=frameTime}
+      if(now-candidateSince>0.07 && (!active || active.midi!==midi)) {
+        const onset=Math.max(recordingStartAt,candidateSince-timingCompensation);
+        closeNote(candidateSince);
+        if(recording){active={midi,start:onset};render()}
+      }
+    } else {
+      pitchEl.textContent='—'; freqEl.textContent=rms>0.012?'Listening…':'Waiting for a note'; candidate=null;
+      if(!silentSince)silentSince=now;
+      if(active && now-silentSince>0.075) closeNote(silentSince);
+    }
+    if(active && wallNow-lastRender>200){render();lastRender=wallNow}
+    raf=requestAnimationFrame(detect);
+  }
+  function pulse(text,marker='') {
+    $('beat-state').textContent=text;
+    $('beat-number').textContent=marker;
+    const dot=$('beat-dot'); dot.classList.remove('pulse'); void dot.offsetWidth; dot.classList.add('pulse');
+  }
+  function clickAt(when,accent,audioContext=ctx,force=false,rootOverride=undefined,stepOverride=undefined) {
+    if((!force&&!$('click-enabled').checked) || !audioContext)return;
+    const osc=audioContext.createOscillator(), gain=audioContext.createGain(), tick=audioContext.createOscillator(), tickGain=audioContext.createGain(), startAt=Math.max(when,audioContext.currentTime);
+    const root=rootOverride===undefined?Number($('key-root').value):rootOverride;
+    const midi=root===null?null:60+root+(stepOverride===undefined?(accent?0:7):stepOverride),level=audioContext===humCtx?(accent?0.11:0.075):(accent?0.19:0.13),tickLevel=audioContext===humCtx?(accent?0.2:0.15):(accent?0.24:0.18);
+    osc.type='sine'; osc.frequency.value=midi===null?(accent?1320:880):440*2**((midi-69)/12);
+    gain.gain.setValueAtTime(0.0001,startAt);
+    gain.gain.exponentialRampToValueAtTime(level,startAt+0.004);
+    gain.gain.exponentialRampToValueAtTime(0.0001,startAt+0.075);
+    tick.type='triangle';tick.frequency.value=accent?1760:1320;
+    tickGain.gain.setValueAtTime(0.0001,startAt);tickGain.gain.exponentialRampToValueAtTime(tickLevel,startAt+0.002);tickGain.gain.exponentialRampToValueAtTime(0.0001,startAt+0.045);
+    osc.connect(gain);gain.connect(audioContext.destination);tick.connect(tickGain);tickGain.connect(audioContext.destination);
+    osc.start(startAt);osc.stop(startAt+0.08);tick.start(startAt);tick.stop(startAt+0.05);
+  }
+  function playKeyChord(audioContext=ctx) {
+    if(!audioContext || audioContext.state==='closed')return;
+    const key=selectedKey(),root=60+key.root,third=key.mode==='minor'?3:4,at=audioContext.currentTime+0.05;
+    [root,root+third,root+7].forEach((midi,index)=>{
+      const osc=audioContext.createOscillator(),gain=audioContext.createGain();
+      // Triangle adds audible harmonics so the chord carries on laptop speakers.
+      const level=index===0?0.16:0.13;
+      osc.type='triangle';osc.frequency.value=440*2**((midi-69)/12);
+      gain.gain.setValueAtTime(0.0001,at);gain.gain.exponentialRampToValueAtTime(level,at+0.04);
+      gain.gain.setValueAtTime(level,at+0.8);gain.gain.exponentialRampToValueAtTime(0.0001,at+1.25);
+      osc.connect(gain);gain.connect(audioContext.destination);osc.start(at);osc.stop(at+1.28);
+    });
+  }
+  function clockBeat() {
+    if(!ctx)return;
+    while(ctx.currentTime+0.025>=nextBeatAt) {
+      const at=nextBeatAt;
+      if(countInIndex<countInTotal) {
+        const bar=Math.floor(countInIndex/takeSettings.beats)+1, beat=countInIndex%takeSettings.beats+1;
+        pulse(`Count-in · bar ${bar} · beat ${beat}`,String(beat)); clickAt(at,beat===1); countInIndex++;
+      } else {
+        if(!recording){recording=true;recordingStartAt=at;musicBeatIndex=0;$('listen').textContent='Recording take'}
+        const bar=Math.floor(musicBeatIndex/takeSettings.beats)+1, beat=musicBeatIndex%takeSettings.beats+1;
+        pulse(`Recording · bar ${bar} · beat ${beat}`,String(beat)); clickAt(at,beat===1); musicBeatIndex++;
+      }
+      nextBeatAt+=beatDuration;
+    }
+  }
+  function readTakeSettings() {
+    const selected=$('meter-select').value;
+    if(selected==='custom') takeSettings={bpm:Number($('tempo').value),beats:Math.max(1,Math.min(12,Number($('custom-beats').value)||4)),unit:Number($('custom-unit').value)};
+    else {const [beats,unit]=selected.split('/').map(Number);takeSettings={bpm:Number($('tempo').value),beats,unit}}
+    takeSettings.bpm=Math.max(40,Math.min(240,takeSettings.bpm||100));
+    beatDuration=60/takeSettings.bpm*4/takeSettings.unit;
+  }
+  function humClickClock() {
+    if(!humCtx)return;
+    while(humCtx.currentTime+0.025>=humNextBeatAt) {
+      const syllables=['do','mi','sol','mi','do','sol','do'];
+      if(humBeatIndex<4){pulse('Key setup · count down',String(humBeatIndex+1));clickAt(humNextBeatAt,humBeatIndex===0,humCtx,true,null)}
+      else {const index=(humBeatIndex-4)%syllables.length,intervals=[0,4,7,4,0,7,0];pulse(`Sing ${syllables[index]} with the click`,syllables[index]);clickAt(humNextBeatAt,index===0,humCtx,true,humSequence.length?humSequence[0]:null,intervals[index])}
+      humBeatIndex++;humNextBeatAt+=beatDuration;
+    }
+  }
+  function startCountIn() {
+    readTakeSettings();
+    countInTotal=takeSettings.beats*Number($('count-bars').value);countInIndex=0;musicBeatIndex=0;recording=false;
+    nextBeatAt=ctx.currentTime+0.2;
+    $('beat-state').textContent='Get ready…';
+    beatTimer=setInterval(clockBeat,12);
+  }
+  function stopHum(){if(humRaf)cancelAnimationFrame(humRaf);if(humBeatTimer)clearInterval(humBeatTimer);if(humStream)humStream.getTracks().forEach(t=>t.stop());if(humCtx)humCtx.close();humRaf=null;humBeatTimer=null;humStream=null;humCtx=null;humAnalyser=null;humCandidate=null;humLastRecordedClass=null;$('hum-key').disabled=false;$('hum-key').textContent='Set key by humming';$('listen').disabled=false}
+  async function humKey(){
+    if(stream){updateKeyStatus('Finish the current take before humming a key.');return}
+    try {
+      $('hum-key').disabled=true;$('hum-key').textContent='Listening…';$('listen').disabled=true;updateKeyStatus('Follow the count-in, then sing do–mi–sol–mi–do–sol–do, one note per click.');
+      readTakeSettings();
+      humStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+      humCtx=new AudioContext();await humCtx.resume();humAnalyser=humCtx.createAnalyser();humAnalyser.fftSize=4096;humCtx.createMediaStreamSource(humStream).connect(humAnalyser);
+      humStarted=performance.now()-beatDuration*4*1000;humCandidate=null;humLastRecordedClass=null;humSequence=[];humBeatIndex=0;humNextBeatAt=humCtx.currentTime+0.2;humBeatTimer=setInterval(humClickClock,12);
+      const sample=()=>{
+        if(!humAnalyser)return;
+        const buffer=new Float32Array(humAnalyser.fftSize);humAnalyser.getFloatTimeDomainData(buffer);
+        const {hz}=estimatePitch(buffer,humCtx.sampleRate),now=performance.now(),midi=hz?Math.round(69+12*Math.log2(hz/440)):null;
+        if(midi!==null&&midi>=24&&midi<=96){
+          const pitchClass=midi%12;
+          if(pitchClass!==humCandidate){humCandidate=pitchClass;humSince=now}
+          if(now-humSince>=110&&humLastRecordedClass!==pitchClass){
+            humLastRecordedClass=pitchClass;
+            const pattern=[0,4,7,4,0,7,0];
+            if(!humSequence.length){humSequence=[pitchClass];$('key-root').value=String(pitchClass);$('key-mode').value='major'}
+            else {
+              const expected=(humSequence[0]+pattern[humSequence.length])%12;
+              if(pitchClass===expected)humSequence.push(pitchClass);
+              else if(pitchClass===humSequence[0])humSequence=[pitchClass];
+              else humSequence=[];
+            }
+            if(humSequence.length===pattern.length){$('key-root').value=String(humSequence[0]);$('key-mode').value='major';updateKeyStatus(`Key found: ${selectedKey().name}.`);stopHum();return}
+            updateKeyStatus(humSequence.length?`Heard ${humSequence.length}/7 notes. Keep singing with the click.`:'Pattern did not match. Start again with do on a click.');
+          }
+        } else {humCandidate=null;humLastRecordedClass=null}
+        if(now-humStarted>40000){updateKeyStatus('Did not hear the full pattern. Try again or choose a key.');stopHum();return}
+        humRaf=requestAnimationFrame(sample);
+      };
+      sample();
+    } catch(e) {updateKeyStatus(e.name==='NotAllowedError'?'Microphone permission was denied.': 'Could not start key detection. Check microphone access.');stopHum()}
+  }
+  async function start() {
+    try {
+      if(!navigator.mediaDevices?.getUserMedia) throw new Error('secure-context');
+      // Snapshot the chosen meter before any asynchronous permission prompt.
+      // Exports and the count-in then use this same immutable take setup.
+      readTakeSettings();
+      document.querySelector('.setup-fields').querySelectorAll('input,select').forEach(el=>el.disabled=true);
+      $('custom-beats').disabled=true;$('custom-unit').disabled=true;
+      $('listen').disabled=true;$('listen').textContent='Starting…';
+      // Begin audio directly from the Start click before any permission waits.
+      ctx=new AudioContext();
+      const audioReady=ctx.resume();
+      $('listen').textContent='Key chord…';
+      playKeyChord(ctx);pulse(`${selectedKey().name} chord · then count in`,'I');
+      await audioReady;
+      if(ctx.state!=='running')throw new Error('Audio playback did not start. Try clicking Start listening again.');
+      stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+      analyser=ctx.createAnalyser(); analyser.fftSize=2048; analyser.smoothingTimeConstant=0;
+      source=ctx.createMediaStreamSource(stream); source.connect(analyser);
+      notes=[]; pitchTrace=[]; recording=false; candidate=null; active=null; lastFrame=0;pitchHistory=[];
+      $('stop').disabled=false; render();
+      keyChordTimeout=setTimeout(()=>{keyChordTimeout=null;if(ctx){$('listen').textContent='Count-in…';startCountIn()}},1450);
+      detect();
+    } catch(e) {
+      if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;
+      if(ctx){await ctx.close().catch(()=>{});ctx=null}
+      document.querySelector('.setup-fields').querySelectorAll('input,select').forEach(el=>el.disabled=false);$('custom-beats').disabled=false;$('custom-unit').disabled=false;
+      $('listen').disabled=false;$('listen').textContent='Start listening';$('stop').disabled=true;
+      freqEl.textContent=e.name==='NotAllowedError'?'Microphone permission was denied':e.message==='secure-context'?'Open this app from localhost or HTTPS to use the microphone.':'Could not start microphone. Check browser microphone access and try again.';
+    }
+  }
+  function stop() {
+    if(recording){recording=false;closeNote(ctx.currentTime)}
+    settleTake();
+    if(keyChordTimeout){clearTimeout(keyChordTimeout);keyChordTimeout=null}
+    if(beatTimer){clearInterval(beatTimer);beatTimer=null}
+    cancelAnimationFrame(raf); if(stream)stream.getTracks().forEach(t=>t.stop()); if(ctx)ctx.close();
+    stream=null;ctx=null;analyser=null;source=null; active=null;
+    document.querySelector('.setup-fields').querySelectorAll('input,select').forEach(el=>el.disabled=false);$('custom-beats').disabled=false;$('custom-unit').disabled=false;
+    $('beat-state').textContent='Take finished';$('beat-dot').classList.remove('pulse');
+    $('listen').disabled=false; $('listen').textContent='Start listening'; $('stop').disabled=true;
+  }
+  function render() {
+    $('count').textContent=notes.length?`${notes.length} note${notes.length===1?'':'s'}`:'No notes yet';
+    $('midi').disabled=!notes.length; $('xml').disabled=!notes.length;
+    $('notes').innerHTML=notes.length?notes.map(n=>`<span class="chip">${noteName(n.midi)} · ${(n.end-n.start).toFixed(1)}s</span>`).join(''):'<span class="score-note">Your recorded notes will appear here.</span>';
+    const visibleNotes=active?notes.concat({...active,end:ctx?.currentTime||active.start}):notes;
+    const clef=chooseClef(visibleNotes), ns=visibleNotes.slice(-28), width=Math.max(760,ns.length*54+50), yFor=midi=>122-(diatonicPosition(midi)-clef.bottom)*9;
+    $('staff-title').textContent=`${clef.name} staff`;
+    score.setAttribute('aria-label',`Transcribed melody on a ${clef.name.toLowerCase()} staff`);
+    score.setAttribute('viewBox',`0 0 ${width} 200`); score.innerHTML='';
+    for(let i=0;i<5;i++){const y=50+i*18;const line=document.createElementNS('http://www.w3.org/2000/svg','line');line.setAttribute('x1','30');line.setAttribute('x2',String(width-15));line.setAttribute('y1',y);line.setAttribute('y2',y);line.setAttribute('stroke','#77796f');line.setAttribute('stroke-width','1');score.append(line)}
+    const clefMark=document.createElementNS('http://www.w3.org/2000/svg','text');clefMark.textContent=clef.symbol;clefMark.setAttribute('x','34');clefMark.setAttribute('y','119');clefMark.setAttribute('font-size','70');clefMark.setAttribute('fill','#355e48');score.append(clefMark);
+    if(!ns.length){const t=document.createElementNS('http://www.w3.org/2000/svg','text');t.textContent='Start listening, then record a melody';t.setAttribute('x','170');t.setAttribute('y','112');t.setAttribute('class','empty');score.append(t)}
+    ns.forEach((n,i)=>{const x=122+i*54,step=diatonicPosition(n.midi)-clef.bottom,y=yFor(n.midi);if(step<0){for(let ledger=-2;ledger>=step;ledger-=2){const line=document.createElementNS('http://www.w3.org/2000/svg','line');line.setAttribute('x1',x-12);line.setAttribute('x2',x+12);line.setAttribute('y1',yForFromStep(ledger));line.setAttribute('y2',yForFromStep(ledger));line.setAttribute('stroke','#77796f');line.setAttribute('stroke-width','1');score.append(line)}}else if(step>8){for(let ledger=10;ledger<=step;ledger+=2){const line=document.createElementNS('http://www.w3.org/2000/svg','line');line.setAttribute('x1',x-12);line.setAttribute('x2',x+12);line.setAttribute('y1',yForFromStep(ledger));line.setAttribute('y2',yForFromStep(ledger));line.setAttribute('stroke','#77796f');line.setAttribute('stroke-width','1');score.append(line)}}const el=document.createElementNS('http://www.w3.org/2000/svg','ellipse');el.setAttribute('cx',x);el.setAttribute('cy',y);el.setAttribute('rx','8');el.setAttribute('ry','5.5');el.setAttribute('transform',`rotate(-18 ${x} ${y})`);el.setAttribute('fill','#20231f');score.append(el);const label=document.createElementNS('http://www.w3.org/2000/svg','text');label.textContent=noteName(n.midi);label.setAttribute('x',x-13);label.setAttribute('y',y-11);label.setAttribute('font-size','10');label.setAttribute('fill','#72776f');score.append(label)});
+    function yForFromStep(step){return 122-step*9}
+  }
+  function vlq(n){n=Math.max(0,Math.round(n));let bytes=[n&127];while((n>>=7)){bytes.unshift((n&127)|128)}return bytes}
+  function makeMidi(){
+    const ev=[],{bpm,beats,unit}=takeSettings,quarterBpm=bpm*4/unit,ticksPerSecond=quarterBpm*8,us=Math.round(60000000/quarterBpm),denominatorExponent=Math.log2(unit),key=selectedKey();
+    if(!Number.isInteger(beats)||!Number.isInteger(denominatorExponent))throw new Error('Choose a valid time signature before exporting.');
+    // Keep note offsets relative to the first recording downbeat rather than
+    // shifting the first detected pitch to tick zero.
+    const gridTicks=120; // sixteenth notes at 480 PPQ
+    for(const n of notes){
+      const rawStart=Math.max(0,(n.start-recordingStartAt)*ticksPerSecond),rawEnd=Math.max(rawStart+gridTicks,(n.end-recordingStartAt)*ticksPerSecond);
+      const st=Math.round(rawStart/gridTicks)*gridTicks,en=Math.max(st+gridTicks,Math.round(rawEnd/gridTicks)*gridTicks);
+      ev.push({t:st,b:[0x90,n.midi,96]},{t:en,b:[0x80,n.midi,0]});
+    }
+    ev.sort((a,b)=>a.t-b.t||a.b[0]-b.b[0]);
+    // MIDI 0x58 stores the numerator directly and denominator as log2(unit).
+    let data=[0,0xff,0x51,3,(us>>16)&255,(us>>8)&255,us&255,0,0xff,0x58,4,beats,denominatorExponent,24,8,0,0xff,0x59,2,key.signature&255,key.mode==='minor'?1:0],prev=0;
+    for(const e of ev){data.push(...vlq(e.t-prev),...e.b);prev=e.t}data.push(0,0xff,0x2f,0);
+    return new Uint8Array([...ascii('MThd'),0,0,0,6,0,0,0,1,1,0xe0,...ascii('MTrk'),(data.length>>>24)&255,(data.length>>>16)&255,(data.length>>>8)&255,data.length&255,...data]);
+  }
+  function ascii(s){return [...s].map(c=>c.charCodeAt(0))}
+  function download(name,type,data){const blob=new Blob([data],{type}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500)}
+  function makeXml(){const steps=['C','C','D','D','E','F','F','G','G','A','A','B'], alters=[0,1,0,1,0,0,1,0,1,0,1,0],divisions=4,clef=chooseClef(notes),key=selectedKey();let body=notes.map(n=>{const ix=n.midi%12,oct=Math.floor(n.midi/12)-1,quarters=(n.end-n.start)*takeSettings.bpm/60,choices=[.25,.5,1,2,4,8],q=choices.reduce((a,b)=>Math.abs(b-quarters)<Math.abs(a-quarters)?b:a),dur=Math.max(1,Math.round(q*divisions)),type={'.25':'16th','.5':'eighth','1':'quarter','2':'half','4':'whole','8':'breve'}[String(q)];return `<note><pitch><step>${steps[ix]}</step>${alters[ix]?`<alter>1</alter>`:''}<octave>${oct}</octave></pitch><duration>${dur}</duration><type>${type}</type></note>`}).join('');return `<?xml version="1.0" encoding="UTF-8"?><score-partwise version="4.0"><work><work-title>Melody Capture</work-title></work><part-list><score-part id="P1"><part-name>Melody</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>${divisions}</divisions><key><fifths>${key.signature}</fifths><mode>${key.mode}</mode></key><time><beats>${takeSettings.beats}</beats><beat-type>${takeSettings.unit}</beat-type></time><clef><sign>${clef.sign}</sign><line>${clef.line}</line></clef></attributes><sound tempo="${takeSettings.bpm}"/><direction placement="above"><direction-type><words>Approximate rhythm · review after import</words></direction-type></direction>${body}<barline location="right"><bar-style>light-heavy</bar-style></barline></measure></part></score-partwise>`}
+  $('listen').addEventListener('click',start);
+  $('stop').addEventListener('click',stop);
+  $('clear').addEventListener('click',()=>{notes=[];pitchTrace=[];render()});
+  $('gate').addEventListener('input',e=>{inputGate=Number(e.target.value);$('gate-value').textContent=inputGate.toFixed(3)});
+  $('meter-select').addEventListener('change',e=>{$('custom-meter').hidden=e.target.value!=='custom'});
+  $('hum-key').addEventListener('click',humKey);
+  $('key-root').addEventListener('change',()=>updateKeyStatus(`Selected key: ${selectedKey().name}`));
+  $('key-mode').addEventListener('change',()=>updateKeyStatus(`Selected key: ${selectedKey().name}`));
+  $('midi').addEventListener('click',()=>download('melody-capture.mid','audio/midi',makeMidi()));
+  $('xml').addEventListener('click',()=>download('melody-capture.musicxml','application/vnd.recordare.musicxml+xml',makeXml()));
+  render();
+})();
+</script>
+</body>
+</html>
