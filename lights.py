@@ -99,6 +99,7 @@ LEGACY_PATTERN_MAP = {
 }
 DEFAULT_CONTROLS = {
     "sensitivity": 1.0,
+    "band_sensitivity": 1.0,
     "audio_enabled": True,
     "brightness": 1.0,
     "pattern": "spotlight",
@@ -280,6 +281,9 @@ def load_control_settings():
                         controls["spotlight_inputs"][index] = value
             if 0.5 <= sensitivity <= 2.0:
                 controls["sensitivity"] = sensitivity
+            band_sensitivity = float(saved.get("band_sensitivity", controls["sensitivity"]))
+            if 0.5 <= band_sensitivity <= 2.0:
+                controls["band_sensitivity"] = band_sensitivity
             if type(audio_enabled) is bool:
                 controls["audio_enabled"] = audio_enabled
             if 0.0 <= brightness <= 1.0:
@@ -696,6 +700,7 @@ class LightingController:
         if self.controls["tempo_input"]:
             self.update_tempo_meter(values[self.controls["tempo_input"] - 1], now)
         sensitivity_db = 12.0 * math.log2(self.controls["sensitivity"])
+        band_sensitivity_db = 12.0 * math.log2(self.controls["band_sensitivity"])
         if not self.controls["audio_enabled"]:
             for index, meter_value in enumerate(voice_values):
                 level = clean_vu(int(meter_value + sensitivity_db * 256.0))
@@ -704,7 +709,7 @@ class LightingController:
             band_channels = effective_band_inputs(self.controls)
             if band_channels:
                 band_meter = max(values[channel - 1] for channel in band_channels)
-                band_target = clean_vu(int(band_meter + sensitivity_db * 256.0))
+                band_target = clean_vu(int(band_meter + band_sensitivity_db * 256.0))
             else:
                 band_target = 0.0
             self.smoothed_band += BAND_SMOOTHING_ALPHA * (band_target - self.smoothed_band)
@@ -739,7 +744,7 @@ class LightingController:
         band_channels = effective_band_inputs(self.controls)
         if band_channels:
             band_meter = max(values[channel - 1] for channel in band_channels)
-            band_target = clean_vu(int(band_meter + sensitivity_db * 256.0))
+            band_target = clean_vu(int(band_meter + band_sensitivity_db * 256.0))
         else:
             band_target = 0.0
         self.smoothed_band += BAND_SMOOTHING_ALPHA * (band_target - self.smoothed_band)
@@ -1058,7 +1063,7 @@ PANEL_HTML = r'''<!doctype html>
 <label class="small"><input id="spotlightOverlay" type="checkbox" checked> Keep meter triggered white spotlights over this effect</label></div>
 <div class="toast" id="toast"></div></section>
 <section class="card"><div class="label"><span>Brightness</span><span class="value" id="brightnessValue">100%</span></div><input id="brightness" type="range" min="0" max="100" value="100" aria-label="Brightness"></section>
-<section class="card"><div class="audio-heading"><strong>Audio response</strong><label class="audio-toggle" title="Toggle audio response"><input id="audioEnabled" type="checkbox" checked aria-label="Audio response"><span class="switch-track" aria-hidden="true"></span></label></div><div class="label"><span>Audio sensitivity</span><span class="value" id="sensitivityValue">1.00×</span></div><input id="sensitivity" type="range" min="50" max="200" value="100" aria-label="Audio sensitivity"><div class="small">Adjust how strongly meter levels affect lighting. Higher values respond to quieter signals.</div><div id="spotlightInfluenceWrap" hidden style="margin-top:18px"><div class="label"><span id="kickInfluenceLabel">Spotlight Band ↔ Kick influence</span><span class="value" id="kickInfluenceValue">Band 100% · Kick 0%</span></div><input id="kickInfluence" type="range" min="0" max="100" value="0" aria-label="Influence of Kick vs. Band input"><div class="small" id="kickInfluenceHelp">Balances ambient band lighting between the assigned band inputs and selected kick input. White spotlights still follow their assigned meter inputs.</div></div></section>
+<section class="card"><div class="audio-heading"><strong>Audio response</strong><label class="audio-toggle" title="Toggle audio response"><input id="audioEnabled" type="checkbox" checked aria-label="Audio response"><span class="switch-track" aria-hidden="true"></span></label></div><div class="label"><span>Audio sensitivity</span><span class="value" id="sensitivityValue">1.00×</span></div><input id="sensitivity" type="range" min="50" max="200" value="100" aria-label="Audio sensitivity"><div class="small">Adjust how strongly spotlight meters react. Higher values respond to quieter signals.</div><div id="spotlightInfluenceWrap" hidden style="margin-top:18px"><div class="label"><span id="kickInfluenceLabel">Spotlight Band ↔ Kick influence</span><span class="value" id="kickInfluenceValue">Band 100% · Kick 0%</span></div><input id="kickInfluence" type="range" min="0" max="100" value="0" aria-label="Influence of Kick vs. Band input"><div class="small" id="kickInfluenceHelp">Balances ambient band lighting between the assigned band inputs and selected kick input. White spotlights still follow their assigned meter inputs.</div></div></section>
 <section class="card"><div class="status"><strong>Meter input</strong><span class="small" id="meterState"><i class="dot"></i>Connecting</span></div><div id="fixtureMeters"></div><div class="meter"><span>Band</span><div class="track"><div class="fill" id="band"></div></div><span id="bandt">0%</span></div><div class="small" id="detail">Waiting for status…</div></section>
 <div class="row"><button id="auto">Spotlight mode</button><button class="blackout" id="blackout">Blackout</button></div>
 <script>
@@ -1122,6 +1127,7 @@ AUDIO_SETTINGS_HTML = r'''<!doctype html>
 <style>:root{color-scheme:dark;font:17px system-ui,-apple-system,sans-serif;background:#10131b;color:#f3f5fa}*{box-sizing:border-box}body{margin:0 auto;max-width:760px;padding:22px 18px 40px}a{color:#91caff;text-decoration:none;font-weight:650;display:inline-flex;align-items:center;min-height:44px}.settings-tabs{display:flex;gap:8px;margin:8px 0 14px}.settings-tabs a{padding:8px 14px;border:1px solid #46516a;border-radius:12px}.settings-tabs a.active{background:#252d3d;color:#fff}h1{font-size:27px;margin:8px 0 5px}.sub,.hint{color:#aeb6c7;line-height:1.5}.card{background:#1b202c;border:1px solid #30384a;border-radius:18px;padding:16px;margin:14px 0}.setting-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end}.source-label{font-size:13px;color:#aeb6c7;margin-bottom:5px}select,button,input[type=text]{font:inherit;color:inherit;background:#252d3d;border:1px solid #46516a;border-radius:12px;padding:12px 13px}select,input[type=text]{width:100%;min-height:52px}button{min-height:52px;font-weight:700;cursor:pointer}.range-ends{display:flex;justify-content:space-between;gap:12px;font-size:13px;color:#aeb6c7;margin-top:-4px}.range-ends span:last-child{text-align:right}.hint{font-size:14px}.toast{min-height:24px;color:#9bc9ff;font-size:14px;margin:8px 0}@media(max-width:500px){body{padding:16px 12px}.card{padding:12px}.setting-row{grid-template-columns:1fr}}</style></head><body>
 <a href="/settings">← Settings</a><nav class="settings-tabs"><a href="/settings/fixtures">Fixtures</a><a class="active" href="/settings/audio">Audio</a></nav><h1>Audio</h1><p class="sub">Set the mixer IP address used for audio metering.</p><p><a href="/settings/audio/help">OSC setup help →</a></p>
 <section class="card"><h2>OSC audio source</h2><p class="hint">Works with Behringer XR18 and Midas MR18. Both use the same OSC meter connection.</p><label><div class="source-label">Mixer IP address</div><input id="oscIp" type="text" inputmode="decimal" autocomplete="off" placeholder="192.168.0.18"></label><p class="hint">The controller subscribes to the selected console’s OSC meter streams on UDP port 10024.</p><div class="action-row"><button class="secondary" id="testConnection">Test connection</button><button id="saveSource">Save audio source</button></div></section>
+<section class="card"><h2>Band sensitivity</h2><p class="hint">Adjust how strongly the assigned Band inputs react. Band inputs are listed on the <a href="/settings/fixtures">Fixtures page</a>; change their assignments there.</p><div class="label"><span>Band sensitivity</span><span class="value" id="bandSensitivityValue">1.00×</span></div><input id="bandSensitivity" type="range" min="50" max="200" value="100" aria-label="Band sensitivity"></section>
 <section class="card"><h2>Kick input for beat sync</h2><p class="hint">Choose an input with a clear kick drum signal. If the mixer channel is named “Kick” in its scribble strip, Find Kick can detect it automatically.</p><label><div class="source-label">Kick meter input</div><select id="tempoInput"><option value="0">Off</option></select></label><div class="action-row"><button class="secondary" id="findKick">Find Kick</button><button class="secondary" id="refreshKickNames">Refresh input names</button></div><p class="hint" id="kickNameStatus">Loading names from mixer…</p><div class="label"><span>Kick beat-sync sensitivity</span><span class="value" id="kickSensitivityValue">1.00×</span></div><input id="kickSensitivity" type="range" min="50" max="200" value="100" aria-label="Kick beat-sync sensitivity"><div class="range-ends"><span>Higher signal needed</span><span>Quieter signal triggers</span></div><p class="hint">Slide right to let quieter kicks trigger beat detection; slide left to require a stronger signal. This is independent of audio sensitivity and Spotlight’s Band ↔ Kick influence.</p><p class="hint">Beat sync estimates tempo from repeated meter peaks. Channel-name lookup reads the XR/MR18 input names over OSC.</p></section>
 <div class="toast" id="toast">Loading settings…</div>
 <script>
@@ -1129,11 +1135,12 @@ const $=id=>document.getElementById(id);
 function populateKickInputs(names,selected){const select=$('tempoInput');select.innerHTML='';select.add(new Option('Off','0'));for(let i=1;i<=16;i++){const label=names[i]||`Input ${i}`;select.add(new Option(`${label} · Input ${i}`,String(i)))}select.value=String(selected||0)}
 async function loadKickNames(force=false,selected=Number($('tempoInput').value)){try{const r=await fetch(force?'/api/input-names/refresh':'/api/input-names',{method:force?'POST':'GET',cache:'no-store'}),j=await r.json();populateKickInputs(j.inputs||{},selected);const count=Object.keys(j.inputs||{}).length;$('kickNameStatus').textContent=count?`Loaded ${count} mixer input names.`:'Mixer returned no input names; showing channel numbers.'}catch(e){populateKickInputs({},selected);$('kickNameStatus').textContent='Could not read mixer names; showing channel numbers.'}}
 for(let i=1;i<=16;i++)$('tempoInput').add(new Option(`Input ${i}`,String(i)));
-async function load(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();$('oscIp').value=s.controls.osc_ip;$('tempoInput').value=String(s.controls.tempo_input||0);$('kickSensitivity').value=String(Math.round(s.controls.kick_sensitivity*100));$('kickSensitivityValue').textContent=s.controls.kick_sensitivity.toFixed(2)+'×';$('toast').textContent='Ready';loadKickNames(false,s.controls.tempo_input||0)}catch(e){$('toast').textContent='Could not load settings: '+e.message}}
+async function load(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();$('oscIp').value=s.controls.osc_ip;$('tempoInput').value=String(s.controls.tempo_input||0);$('kickSensitivity').value=String(Math.round(s.controls.kick_sensitivity*100));$('kickSensitivityValue').textContent=s.controls.kick_sensitivity.toFixed(2)+'×';$('bandSensitivity').value=String(Math.round(s.controls.band_sensitivity*100));$('bandSensitivityValue').textContent=s.controls.band_sensitivity.toFixed(2)+'×';$('toast').textContent='Ready';loadKickNames(false,s.controls.tempo_input||0)}catch(e){$('toast').textContent='Could not load settings: '+e.message}}
 $('refreshKickNames').onclick=async()=>{const button=$('refreshKickNames');button.disabled=true;await loadKickNames(true);button.disabled=false};
 $('testConnection').onclick=async()=>{const button=$('testConnection');button.disabled=true;$('toast').textContent='Testing OSC connection…';try{const r=await fetch('/api/test-osc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({osc_ip:$('oscIp').value.trim()})}),j=await r.json();if(!r.ok)throw Error(j.error||'Connection test failed');$('toast').textContent=`OSC reply received from ${j.osc_ip}`}catch(e){$('toast').textContent='Connection test failed: '+e.message}finally{button.disabled=false}};
 $('saveSource').onclick=async()=>{try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({osc_ip:$('oscIp').value.trim()})}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent='Audio source saved; reconnecting to the console'}catch(e){$('toast').textContent='Could not save audio settings: '+e.message}};
 $('tempoInput').onchange=async()=>{try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tempo_input:Number($('tempoInput').value)})}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent='Kick input saved'}catch(e){$('toast').textContent='Could not save kick input: '+e.message}};
+$('bandSensitivity').oninput=e=>{const value=Number(e.target.value)/100;$('bandSensitivityValue').textContent=value.toFixed(2)+'×';clearTimeout(window.bandSensitivityTimer);window.bandSensitivityTimer=setTimeout(async()=>{try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({band_sensitivity:value})}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent='Band sensitivity saved'}catch(e){$('toast').textContent='Could not save band sensitivity: '+e.message}},180)};
 $('kickSensitivity').oninput=e=>{const value=Number(e.target.value)/100;$('kickSensitivityValue').textContent=value.toFixed(2)+'×';clearTimeout(window.kickSensitivityTimer);window.kickSensitivityTimer=setTimeout(async()=>{try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kick_sensitivity:value})}),j=await r.json();if(!r.ok)throw Error(j.error||'Save failed');$('toast').textContent='Kick beat-sync sensitivity saved'}catch(e){$('toast').textContent='Could not save kick sensitivity: '+e.message}},180)};
 $('findKick').onclick=async()=>{const button=$('findKick');button.disabled=true;$('toast').textContent='Reading mixer channel names…';try{const r=await fetch('/api/find-kick',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({osc_ip:$('oscIp').value.trim()})}),j=await r.json();if(!r.ok)throw Error(j.error||'Kick not found');await loadKickNames(false,j.input);$('tempoInput').value=String(j.input);const saved=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tempo_input:j.input})}),result=await saved.json();if(!saved.ok)throw Error(result.error||'Could not save input');$('toast').textContent=`Found “${j.label}” on Input ${j.input}; beat sync is ready`}catch(e){$('toast').textContent=e.message}finally{button.disabled=false}};
 load();
@@ -1278,7 +1285,7 @@ def start_control_panel(controller):
         if not isinstance(data, dict):
             return jsonify(error="Send a JSON object"), 400
         supported = {
-            "sensitivity", "audio_enabled", "brightness", "pattern",
+            "sensitivity", "band_sensitivity", "audio_enabled", "brightness", "pattern",
             "cycle_colors", "cycle_speed", "fixture_count", "fixture_enabled",
             "spotlight_inputs", "band_mode", "band_inputs", "osc_model", "osc_ip",
             "cycle_layout", "behavior_trigger", "trigger_division", "tempo_input", "kick_sensitivity",
@@ -1299,6 +1306,14 @@ def start_control_panel(controller):
                 if not 0.5 <= value <= 2.0:
                     return jsonify(error="Sensitivity must be between 0.50× and 2.00×"), 400
                 updated["sensitivity"] = value
+            if "band_sensitivity" in data:
+                try:
+                    value = float(data["band_sensitivity"])
+                except (TypeError, ValueError):
+                    return jsonify(error="Band sensitivity must be a number"), 400
+                if not 0.5 <= value <= 2.0:
+                    return jsonify(error="Band sensitivity must be between 0.50× and 2.00×"), 400
+                updated["band_sensitivity"] = value
             if "audio_enabled" in data:
                 value = data["audio_enabled"]
                 if type(value) is not bool:
@@ -1433,7 +1448,7 @@ def start_control_panel(controller):
                 updated["osc_ip"] = value
 
             persistent_keys = {
-                "audio_enabled", "pattern", "cycle_colors", "cycle_speed",
+                "audio_enabled", "pattern", "cycle_colors", "cycle_speed", "band_sensitivity",
                 "fixture_count", "fixture_enabled", "spotlight_inputs",
                 "band_mode", "band_inputs", "osc_model", "osc_ip",
                 "cycle_layout", "behavior_trigger", "trigger_division", "tempo_input", "kick_sensitivity",
