@@ -199,8 +199,9 @@ blend smooths successive BPM estimates.
 
 The UI can select timer, band peaks, or beat sync as the event source for Color
 cycle and its Chase behavior. Band peaks are detected on each selected Band
-input independently, then debounced globally so a single musical hit across
-multiple channels advances the effect once. This prevents a sustained loud
+input independently, then debounced globally for 0.36 s so a single musical
+hit across multiple channels advances the effect once and peak events are
+sampled at no more than about 2.8/s. This prevents a sustained loud
 channel from masking transients on other Band inputs. Kick beat detection uses
 a lower trigger/release threshold to re-arm between hits. `trigger_division`
 can divide those event counts by 1, 2, 4, or 8. Beat sync requires a selected
