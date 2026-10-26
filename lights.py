@@ -59,9 +59,11 @@ TEMPO_TRIGGER_LEVEL = 0.30
 TEMPO_RELEASE_LEVEL = 0.14
 TEMPO_MIN_INTERVAL_SECONDS = 0.20
 TEMPO_MAX_INTERVAL_SECONDS = 2.0
+KICK_PEAK_RETRIGGER_DELTA = 0.025
 KICK_PULSE_DECAY_SECONDS = 0.32
 KICK_AMBIENT_ATTACK_SECONDS = 0.06
 KICK_AMBIENT_RELEASE_SECONDS = 0.24
+KICK_AMBIENT_LEVEL_GAIN = 0.35
 BAND_CHASE_BASE_STEPS_PER_SECOND = 0.125
 BAND_CHASE_LEVEL_STEPS_PER_SECOND = 0.75
 BAND_PAIR_ACCENT_GAIN = 0.66
@@ -593,7 +595,9 @@ class LightingController:
         self.tempo_bpm = None
         self.tempo_intervals = []
         self.tempo_last_beat = None
-        self.tempo_armed = True
+        self.kick_peak_direction = 0
+        self.kick_peak_candidate = 0.0
+        self.kick_peak_valley = 1.0
         self.kick_pulse_level = 0.0
         self.kick_meter_target = 0.0
         self.kick_meter_level = 0.0
@@ -685,7 +689,7 @@ class LightingController:
         )
         if pattern in ("spotlight", "color_cycle"):
             kick_weight = controls["kick_influence"] if controls["audio_enabled"] else 0.0
-            kick_response = max(self.kick_meter_level, self.kick_pulse_level)
+            kick_response = max(KICK_AMBIENT_LEVEL_GAIN * self.kick_meter_level, self.kick_pulse_level)
             kick_ambient_level = MIN_BAND_BRIGHTNESS + (1.0 - MIN_BAND_BRIGHTNESS) * kick_response
             ambient_level = band_ambient_level * (1.0 - kick_weight) + kick_ambient_level * kick_weight
             if pattern == "color_cycle" and not controls["audio_enabled"]:
@@ -1003,27 +1007,51 @@ class LightingController:
                 self.voice_captured_peaks[index] = 0.0
 
     def update_tempo_meter(self, meter_value, now):
-        """Estimate tempo from transient intervals on the selected kick input."""
+        """Track live Kick level and detect local peaks for beat sync."""
         if not self.controls["audio_enabled"] or not self.controls["tempo_input"]:
             self.kick_meter_target = 0.0
+            self.kick_peak_direction = 0
+            self.kick_peak_candidate = 0.0
+            self.kick_peak_valley = 1.0
             return
-        sensitivity_db = 12.0 * math.log2(self.controls["kick_sensitivity"])
-        level = clean_vu(int(meter_value + sensitivity_db * 256.0))
-        self.kick_meter_target = level
-        if level <= TEMPO_RELEASE_LEVEL:
-            self.tempo_armed = True
-            return
-        if level < TEMPO_TRIGGER_LEVEL or not self.tempo_armed:
-            return
+        audio_sensitivity_db = 12.0 * math.log2(self.controls["sensitivity"])
+        self.kick_meter_target = clean_vu(int(meter_value + audio_sensitivity_db * 256.0))
+        kick_sensitivity_db = 12.0 * math.log2(self.controls["kick_sensitivity"])
+        level = clean_vu(int(meter_value + kick_sensitivity_db * 256.0))
+        direction = self.kick_peak_direction
+        detected_peak = False
 
-        self.tempo_armed = False
+        if direction == 0:
+            if level >= TEMPO_TRIGGER_LEVEL:
+                self.kick_peak_direction = 1
+                self.kick_peak_candidate = level
+        elif direction > 0:
+            if level >= self.kick_peak_candidate:
+                self.kick_peak_candidate = level
+            elif self.kick_peak_candidate - level >= KICK_PEAK_RETRIGGER_DELTA:
+                detected_peak = True
+                self.kick_peak_direction = -1
+                self.kick_peak_valley = level
+        elif level <= self.kick_peak_valley:
+            self.kick_peak_valley = level
+        elif level - self.kick_peak_valley >= KICK_PEAK_RETRIGGER_DELTA:
+            self.kick_peak_direction = 1
+            self.kick_peak_candidate = level
+
+        if level < TEMPO_RELEASE_LEVEL:
+            self.kick_peak_direction = 0
+            self.kick_peak_candidate = 0.0
+            self.kick_peak_valley = 1.0
+
+        if not detected_peak:
+            return
         if self.tempo_last_beat is not None:
             interval = now - self.tempo_last_beat
+            if interval < TEMPO_MIN_INTERVAL_SECONDS:
+                return
             if interval > TEMPO_MAX_INTERVAL_SECONDS:
                 self.tempo_intervals.clear()
                 self.tempo_bpm = None
-            elif interval < TEMPO_MIN_INTERVAL_SECONDS:
-                return
             else:
                 self.tempo_intervals.append(interval)
                 self.tempo_intervals = self.tempo_intervals[-7:]
@@ -1383,7 +1411,9 @@ def start_control_panel(controller):
                 controller.tempo_bpm = None
                 controller.tempo_intervals.clear()
                 controller.tempo_last_beat = None
-                controller.tempo_armed = True
+                controller.kick_peak_direction = 0
+                controller.kick_peak_candidate = 0.0
+                controller.kick_peak_valley = 1.0
                 controller.kick_pulse_level = 0.0
         return suggestion, True
 
@@ -1732,7 +1762,9 @@ def start_control_panel(controller):
                 controller.tempo_bpm = None
                 controller.tempo_intervals.clear()
                 controller.tempo_last_beat = None
-                controller.tempo_armed = True
+                controller.kick_peak_direction = 0
+                controller.kick_peak_candidate = 0.0
+                controller.kick_peak_valley = 1.0
                 controller.kick_meter_target = 0.0
                 controller.kick_meter_level = 0.0
             if (
