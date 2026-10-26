@@ -128,7 +128,8 @@ tools and are not needed for normal use.
    connection**. A successful test turns green. Save the address.
 7. In **Settings → Fixtures**, set the number of fixtures and map the spotlight
    source for each one. In **Settings → Audio**, choose band inputs and tune
-   sensitivity or kick sync if you want those features.
+   sensitivity or kick sync if you want those features. The selected Kick input
+   stays separate from the Band group so their lighting balance has two distinct sources.
 
 The default mixer address is `192.168.0.18`; use the address configured on your
 own console. The app currently supports Behringer XR18 and Midas MR18 OSC meter

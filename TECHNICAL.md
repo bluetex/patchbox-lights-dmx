@@ -206,8 +206,10 @@ a lower trigger/release threshold to re-arm between hits. `trigger_division`
 can divide those event counts by 1, 2, 4, or 8. Beat sync requires a selected
 kick input. The status API reports `band_peak_events` and `tempo_beat_events`
 for diagnosing event activity. In Spotlight mode, band meter rolls and kick pulses are combined according
-to `kick_influence`. In Color cycle / Chase, the same control blends the Band
-swell level with the Kick pulse level to modulate the palette brightness; with
+to `kick_influence`. The selected Kick input is excluded from effective Band
+inputs, so the balance compares separate sources. In Color cycle / Chase, the
+same control blends the Band swell with a smoothed live Kick meter and beat
+pulse to modulate palette brightness; with
 audio response disabled, Color cycle retains its fixed ambient level. White
 meter overlays remain independent of this balance.
 
@@ -400,7 +402,7 @@ OSC source:       192.168.0.18
 Fixture count:    4
 Fixture starts:   d001, d008, d015, d022
 Spotlight inputs: 1, 2, 3, 4
-Band mode:        automatic (exclude spotlight inputs)
+Band mode:        automatic (exclude spotlight and Kick inputs)
 Audio response:   on
 Pattern:          Spotlight
 Cycle style:      Cycle through colors
