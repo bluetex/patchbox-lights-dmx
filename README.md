@@ -31,7 +31,8 @@ just a convenient remote control.
   selected lighting mode when switched off. **Save settings** stores the current
   full setup on the Pi, including brightness and sensitivity.
 - **Audio controls** — set sensitivity, tune band and
-  kick response, choose a kick input, and decide whether meter-driven white
+  kick response, balance Band vs. Kick ambient lighting in Spotlight or Color
+  cycle mode, choose a kick input, and decide whether meter-driven white
   spotlights may overlay Color cycle effects.
 - **Fixture setup** — add fixtures, disable individual fixtures, and assign
   each fixture a spotlight source. Mixer scribble-strip names are shown where

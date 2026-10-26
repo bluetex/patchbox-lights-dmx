@@ -205,9 +205,11 @@ channel from masking transients on other Band inputs. Kick beat detection uses
 a lower trigger/release threshold to re-arm between hits. `trigger_division`
 can divide those event counts by 1, 2, 4, or 8. Beat sync requires a selected
 kick input. The status API reports `band_peak_events` and `tempo_beat_events`
-for diagnosing event activity. In the live Spotlight pattern,
-the band's meter-driven rolls and kick pulses are combined according to the
-separate band/kick influence setting.
+for diagnosing event activity. In Spotlight mode, band meter rolls and kick pulses are combined according
+to `kick_influence`. In Color cycle / Chase, the same control blends the Band
+swell level with the Kick pulse level to modulate the palette brightness; with
+audio response disabled, Color cycle retains its fixed ambient level. White
+meter overlays remain independent of this balance.
 
 ## Pattern renderer
 
