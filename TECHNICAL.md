@@ -177,8 +177,8 @@ specifically an input-channel group.
 When a band lift starts (smoothed level ≥ 0.25), the engine selects a color
 from a six-color palette, begins a swell, and tracks local peaks and valleys.
 Color activity releases at ≤ 0.10. A captured band peak is held for 1 s, then
-decays at 2.0 normalized units/s. Swell attack/release constants are 0.12 s
-and 0.50 s; band ambient intensity is scaled to 50% before the master
+decays at 2.0 normalized units/s. Swell attack/release constants are 0.16 s
+and 0.80 s; band ambient intensity is scaled to 50% before the master
 brightness channel is applied.
 
 The **Spotlight audio influence** slider is a blend between band level and
