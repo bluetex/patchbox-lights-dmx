@@ -60,10 +60,11 @@ TEMPO_RELEASE_LEVEL = 0.14
 TEMPO_MIN_INTERVAL_SECONDS = 0.20
 TEMPO_MAX_INTERVAL_SECONDS = 2.0
 KICK_PEAK_RETRIGGER_DELTA = 0.025
-KICK_PULSE_DECAY_SECONDS = 0.32
+KICK_PULSE_DECAY_SECONDS = 0.42
 KICK_AMBIENT_ATTACK_SECONDS = 0.06
 KICK_AMBIENT_RELEASE_SECONDS = 0.24
 KICK_AMBIENT_LEVEL_GAIN = 0.35
+KICK_PULSE_AMBIENT_GAIN = 0.80
 BAND_CHASE_BASE_STEPS_PER_SECOND = 0.125
 BAND_CHASE_LEVEL_STEPS_PER_SECOND = 0.75
 BAND_PAIR_ACCENT_GAIN = 0.66
@@ -689,7 +690,10 @@ class LightingController:
         )
         if pattern in ("spotlight", "color_cycle"):
             kick_weight = controls["kick_influence"] if controls["audio_enabled"] else 0.0
-            kick_response = max(KICK_AMBIENT_LEVEL_GAIN * self.kick_meter_level, self.kick_pulse_level)
+            kick_response = max(
+                KICK_AMBIENT_LEVEL_GAIN * self.kick_meter_level,
+                KICK_PULSE_AMBIENT_GAIN * self.kick_pulse_level,
+            )
             kick_ambient_level = MIN_BAND_BRIGHTNESS + (1.0 - MIN_BAND_BRIGHTNESS) * kick_response
             ambient_level = band_ambient_level * (1.0 - kick_weight) + kick_ambient_level * kick_weight
             if pattern == "color_cycle" and not controls["audio_enabled"]:
