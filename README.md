@@ -7,7 +7,7 @@ uses them to bring four (or more) RGB PAR fixtures to life. A singer's channel
 can bring up a white spotlight, while the rest of the rig adds color, movement,
 and beat-aware accents. When you want to take over, an iPad-friendly control
 panel on the same private network lets you pick the look, adjust brightness,
-and black out the rig.
+black out the rig, and explicitly save the full current setup.
 
 It is designed to run on a Raspberry Pi beside the mixer and DMX adapter. Once
 it is set up, the Pi does the listening and lighting on its own; the browser is
@@ -28,7 +28,8 @@ just a convenient remote control.
   (up to one per fixture), and how many neighboring fixtures travel in each path.
   Spread color cycles assign colors to groups of the selected size.
 - **Blackout** — a toggle that blanks the fixtures and then returns to the
-  selected lighting mode when switched off.
+  selected lighting mode when switched off. **Save settings** stores the current
+  full setup on the Pi, including brightness and sensitivity.
 - **Audio controls** — set sensitivity, tune band and
   kick response, choose a kick input, and decide whether meter-driven white
   spotlights may overlay Color cycle effects.

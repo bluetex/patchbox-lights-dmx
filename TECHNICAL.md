@@ -369,10 +369,12 @@ settings are written to a temporary file and atomically replaced at
 | `chase_strobe` | Boolean | Yes |
 | `osc_model`, `osc_ip` | Supported model / valid IPv4 address | Yes |
 
-Runtime-only controls include Color cycle / Chase brightness and general
-sensitivity. Spotlight white and Band brightness persist. If a control does
-not persist, check the server response and whether the Pi service account can
-write the settings file.
+Most persistent controls are written on each update. Color cycle / Chase
+brightness and general sensitivity are runtime-only by default; the home-page
+**Save settings** action writes a full snapshot so these values also survive a
+restart. Spotlight white and Band brightness persist on each change. The action
+uses `POST /api/save-settings` and writes the current controls atomically to the
+settings file.
 
 ## Configuration and state
 
