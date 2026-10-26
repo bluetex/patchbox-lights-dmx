@@ -32,6 +32,8 @@ VOCAL_THRESHOLD_DB = -10.0
 VOCAL_RELEASE_DB = -24.0
 VOCAL_PEAK_HOLD_SECONDS = 1.0
 VOCAL_PEAK_RETRIGGER_DELTA = 0.08
+BAND_PEAK_RETRIGGER_DELTA = 0.025
+BAND_PEAK_REFRACTORY_SECONDS = 0.18
 PEAK_DECAY_PER_SECOND = 2.0
 WHITE_ATTACK_SECONDS = 0.2
 WHITE_RELEASE_SECONDS = 3.0
@@ -53,9 +55,9 @@ AMBIENT_COLORS = (
 )
 BAND_COLOR_TRIGGER = 0.25
 BAND_COLOR_RELEASE = 0.10
-TEMPO_TRIGGER_LEVEL = 0.46
-TEMPO_RELEASE_LEVEL = 0.22
-TEMPO_MIN_INTERVAL_SECONDS = 0.25
+TEMPO_TRIGGER_LEVEL = 0.30
+TEMPO_RELEASE_LEVEL = 0.14
+TEMPO_MIN_INTERVAL_SECONDS = 0.20
 TEMPO_MAX_INTERVAL_SECONDS = 2.0
 KICK_PULSE_DECAY_SECONDS = 0.32
 BAND_CHASE_BASE_STEPS_PER_SECOND = 0.125
@@ -574,9 +576,10 @@ class LightingController:
         self.band_color_unison = False
         self.band_chase_phase = 0.0
         self.band_chase_direction = 1
-        self.band_peak_detector_direction = 0
-        self.band_peak_candidate = 0.0
-        self.band_peak_valley = 1.0
+        self.band_channel_peak_direction = [0] * INPUT_CHANNEL_COUNT
+        self.band_channel_peak_candidate = [0.0] * INPUT_CHANNEL_COUNT
+        self.band_channel_peak_valley = [1.0] * INPUT_CHANNEL_COUNT
+        self.band_peak_last_event = -1e9
         self.band_effect_peak_count = 0
         self.band_peak_events = 0
         self.tempo_beat_events = 0
@@ -634,9 +637,10 @@ class LightingController:
         self.band_captured_peak = 0.0
         self.band_color_active = False
         self.band_color_rgb = BASELINE_AMBIENT_COLOR
-        self.band_peak_detector_direction = 0
-        self.band_peak_candidate = 0.0
-        self.band_peak_valley = 1.0
+        self.band_channel_peak_direction[:] = [0] * INPUT_CHANNEL_COUNT
+        self.band_channel_peak_candidate[:] = [0.0] * INPUT_CHANNEL_COUNT
+        self.band_channel_peak_valley[:] = [1.0] * INPUT_CHANNEL_COUNT
+        self.band_peak_last_event = -1e9
 
     def ambient_rgb(self, vu_level, fixture_index=None, palette_offset=0):
         color = self.band_color_rgb
@@ -892,52 +896,65 @@ class LightingController:
             self.band_color_active = True
             self.band_chase_phase = 0.0
             self.band_dive_started = now
-            self.band_peak_detector_direction = 0
-            self.band_peak_candidate = self.smoothed_band
-            self.band_peak_valley = self.smoothed_band
             self.band_peak_level = max(self.band_peak_level, self.smoothed_band)
             self.band_peak_hold_until = now + VOCAL_PEAK_HOLD_SECONDS
 
-        if self.band_color_active and self.smoothed_band >= BAND_COLOR_TRIGGER:
-            level = self.smoothed_band
-            if self.band_peak_detector_direction == 0:
-                self.band_peak_detector_direction = 1
-                self.band_peak_candidate = level
-            elif self.band_peak_detector_direction > 0:
-                if level >= self.band_peak_candidate:
-                    self.band_peak_candidate = level
-                elif self.band_peak_candidate - level >= VOCAL_PEAK_RETRIGGER_DELTA:
-                    # A peak is counted after a clear fall from its local high.
-                    peak = self.band_peak_candidate
-                    self.band_peak_detector_direction = -1
-                    self.band_peak_valley = level
-                    self.band_captured_peak = peak
-                    self.band_peak_level = max(self.band_peak_level, peak)
-                    self.band_peak_hold_until = now + VOCAL_PEAK_HOLD_SECONDS
-                    self.band_effect_peak_count += 1
-                    self.band_peak_events += 1
+        # Track each selected Band input separately. A loud sustained channel
+        # can no longer mask peaks from the other channels in the Band group.
+        selected_band_channels = set(band_channels)
+        for channel in range(INPUT_CHANNEL_COUNT):
+            index = channel
+            if channel + 1 not in selected_band_channels:
+                self.band_channel_peak_direction[index] = 0
+                self.band_channel_peak_candidate[index] = 0.0
+                self.band_channel_peak_valley[index] = 1.0
+                continue
+            adjusted = int(values[channel] + band_sensitivity_db * 256.0)
+            level = clean_vu(adjusted)
+            direction = self.band_channel_peak_direction[index]
+            detected_peak = None
+            if direction == 0:
+                if level >= BAND_COLOR_TRIGGER:
+                    self.band_channel_peak_direction[index] = 1
+                    self.band_channel_peak_candidate[index] = level
+            elif direction > 0:
+                if level >= self.band_channel_peak_candidate[index]:
+                    self.band_channel_peak_candidate[index] = level
+                elif self.band_channel_peak_candidate[index] - level >= BAND_PEAK_RETRIGGER_DELTA:
+                    detected_peak = self.band_channel_peak_candidate[index]
+                    self.band_channel_peak_direction[index] = -1
+                    self.band_channel_peak_valley[index] = level
+            elif level <= self.band_channel_peak_valley[index]:
+                self.band_channel_peak_valley[index] = level
+            elif level - self.band_channel_peak_valley[index] >= BAND_PEAK_RETRIGGER_DELTA:
+                self.band_channel_peak_direction[index] = 1
+                self.band_channel_peak_candidate[index] = level
 
-                    if self.band_effect_peak_count >= BAND_PEAKS_PER_EFFECT_CHANGE:
-                        self.band_effect_peak_count = 0
-                        self.band_color_unison = not self.band_color_unison
-                        self.band_chase_direction *= -1
-                        self.band_chase_phase = 0.0
-                        self.band_dive_started = now
-                        colors = tuple(color for color in AMBIENT_COLORS if color != self.band_color_rgb)
-                        self.band_color_rgb = random.choice(colors)
-            else:
-                if level <= self.band_peak_valley:
-                    self.band_peak_valley = level
-                elif level - self.band_peak_valley >= VOCAL_PEAK_RETRIGGER_DELTA:
-                    self.band_peak_detector_direction = 1
-                    self.band_peak_candidate = level
+            if detected_peak is not None and now - self.band_peak_last_event >= BAND_PEAK_REFRACTORY_SECONDS:
+                self.band_peak_last_event = now
+                self.band_captured_peak = detected_peak
+                self.band_peak_level = max(self.band_peak_level, detected_peak)
+                self.band_peak_hold_until = now + VOCAL_PEAK_HOLD_SECONDS
+                self.band_effect_peak_count += 1
+                self.band_peak_events += 1
+                if self.band_effect_peak_count >= BAND_PEAKS_PER_EFFECT_CHANGE:
+                    self.band_effect_peak_count = 0
+                    self.band_color_unison = not self.band_color_unison
+                    self.band_chase_direction *= -1
+                    self.band_chase_phase = 0.0
+                    self.band_dive_started = now
+                    colors = tuple(color for color in AMBIENT_COLORS if color != self.band_color_rgb)
+                    self.band_color_rgb = random.choice(colors)
+
+            if level < BAND_COLOR_TRIGGER:
+                self.band_channel_peak_direction[index] = 0
+                self.band_channel_peak_candidate[index] = 0.0
+                self.band_channel_peak_valley[index] = 1.0
+
 
         if self.band_color_active and self.smoothed_band <= BAND_COLOR_RELEASE:
             self.band_color_active = False
             self.band_captured_peak = 0.0
-            self.band_peak_detector_direction = 0
-            self.band_peak_candidate = 0.0
-            self.band_peak_valley = 1.0
 
     def process_output_meter(self, values, now):
         """Use Aux 1-6 and Main L/R meters as selectable spotlight triggers."""
@@ -1059,6 +1076,9 @@ class LightingController:
             self.voice_captured_peaks[:] = [0.0] * SPOTLIGHT_SOURCE_COUNT
             self.band_color_active = False
             self.band_captured_peak = 0.0
+            self.band_channel_peak_direction[:] = [0] * INPUT_CHANNEL_COUNT
+            self.band_channel_peak_candidate[:] = [0.0] * INPUT_CHANNEL_COUNT
+            self.band_channel_peak_valley[:] = [1.0] * INPUT_CHANNEL_COUNT
         if self.tempo_last_beat is not None and now - self.tempo_last_beat > TEMPO_MAX_INTERVAL_SECONDS:
             self.tempo_bpm = None
             self.tempo_intervals.clear()
@@ -1434,6 +1454,8 @@ def start_control_panel(controller):
             "band": controller.smoothed_band,
             "tempo_bpm": controller.tempo_bpm,
             "tempo_input": controller.controls["tempo_input"],
+            "band_peak_events": controller.band_peak_events,
+            "tempo_beat_events": controller.tempo_beat_events,
             "meter_age": meter_age,
             "dmx_frames": controller.dmx_frames_submitted,
             "error": controller.last_error or controller.last_network_error,

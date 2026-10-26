@@ -198,8 +198,14 @@ converts the median interval to BPM. A 0.35 new / 0.65 previous exponential
 blend smooths successive BPM estimates.
 
 The UI can select timer, band peaks, or beat sync as the event source for Color
-cycle and its Chase behavior. `trigger_division` can divide those event counts
-by 1, 2, 4, or 8. Beat sync requires a selected kick input. In the live Spotlight pattern,
+cycle and its Chase behavior. Band peaks are detected on each selected Band
+input independently, then debounced globally so a single musical hit across
+multiple channels advances the effect once. This prevents a sustained loud
+channel from masking transients on other Band inputs. Kick beat detection uses
+a lower trigger/release threshold to re-arm between hits. `trigger_division`
+can divide those event counts by 1, 2, 4, or 8. Beat sync requires a selected
+kick input. The status API reports `band_peak_events` and `tempo_beat_events`
+for diagnosing event activity. In the live Spotlight pattern,
 the band's meter-driven rolls and kick pulses are combined according to the
 separate band/kick influence setting.
 
